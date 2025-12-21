@@ -4,7 +4,7 @@
 
 **AI-powered step-by-step guidance for any website**
 
-*Like game hints, but for software*
+*Like game hints, but for website*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Chrome Extension](https://img.shields.io/badge/Platform-Chrome%20Extension-blue)](https://developer.chrome.com/docs/extensions/)
