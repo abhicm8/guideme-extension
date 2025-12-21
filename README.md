@@ -40,9 +40,16 @@ Ask a question like *"How do I change my profile picture?"* and GuideMe will:
 
 ## 📸 Screenshots
 
-<div align="center">
-<i>Screenshots coming soon</i>
-</div>
+<img width="1272" height="668" alt="1" src="https://github.com/user-attachments/assets/ac876298-a78a-4d7f-93c5-3a264bf0c2fe" />
+
+
+https://github.com/user-attachments/assets/f46b46e2-f838-4d7a-a443-b61b5e7a59a1
+
+
+<img width="543" height="762" alt="image" src="https://github.com/user-attachments/assets/f00d5821-895c-4f15-9424-2558e1185077" />
+
+<img width="911" height="706" alt="image" src="https://github.com/user-attachments/assets/8cb5d9c6-888c-4070-99f9-c642a5fb5675" />
+
 
 ## 📦 Installation
 
