@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GuideMe</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <span class="logo-icon">🎯</span>
+        <span class="logo-text">GuideMe</span>
+      </div>
+      <button id="settingsBtn" class="icon-btn" title="Settings">⚙️</button>
+    </header>
+
+    <!-- Main View -->
+    <main id="mainView" class="main-view">
+      <div class="current-site">
+        <span class="site-label">Currently on:</span>
+        <span id="siteName" class="site-name">Loading...</span>
+      </div>
+
+      <div class="input-section">
+        <label for="taskInput" class="input-label">What do you want to do?</label>
+        <textarea 
+          id="taskInput" 
+          class="task-input" 
+          placeholder="e.g., How do I create a new project?&#10;e.g., Where can I change my password?&#10;e.g., Help me export this as PDF"
+          rows="3"
+        ></textarea>
+        <button id="guideBtn" class="guide-btn">
+          <span class="btn-icon">✨</span>
+          Guide Me
+        </button>
+      </div>
+
+      <div id="statusMessage" class="status-message hidden"></div>
+
+      <!-- Quick Actions -->
+      <div class="quick-actions">
+        <span class="quick-label">Quick:</span>
+        <button class="quick-btn" data-task="How do I navigate this site?">Navigate</button>
+        <button class="quick-btn" data-task="Where are the settings?">Settings</button>
+        <button class="quick-btn" data-task="How do I sign up or login?">Login</button>
+      </div>
+    </main>
+
+    <!-- Settings View -->
+    <div id="settingsView" class="settings-view hidden">
+      <div class="settings-header">
+        <button id="backBtn" class="icon-btn">←</button>
+        <h2>Settings</h2>
+      </div>
+
+      <div class="settings-content">
+        <div class="setting-group">
+          <label for="apiProvider" class="setting-label">AI Provider</label>
+          <select id="apiProvider" class="setting-select">
+            <option value="gemini">Google Gemini (Free) ⭐</option>
+            <option value="openai">OpenAI (GPT-4o-mini)</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+          </select>
+          <p id="providerHint" class="setting-hint provider-hint">Get free API key at aistudio.google.com</p>
+        </div>
+
+        <div class="setting-group">
+          <label for="apiKey" class="setting-label">API Key</label>
+          <input 
+            type="password" 
+            id="apiKey" 
+            class="setting-input" 
+            placeholder="Enter your API key"
+          >
+          <p class="setting-hint">🔒 Stored locally, never sent to our servers.</p>
+        </div>
+
+        <div class="setting-group">
+          <label for="highlightColor" class="setting-label">Highlight Color</label>
+          <input type="color" id="highlightColor" class="setting-color" value="#4F46E5">
+        </div>
+
+        <button id="saveSettingsBtn" class="save-btn">Save Settings</button>
+      </div>
+    </div>
+
+    <!-- Guide Progress View -->
+    <div id="guideView" class="guide-view hidden">
+      <div class="guide-header">
+        <button id="stopGuideBtn" class="icon-btn" title="Stop guide">✕</button>
+        <h2>Following Guide</h2>
+      </div>
+
+      <div class="guide-content">
+        <div id="currentStep" class="current-step">
+          <span class="step-number">Step 1 of 3</span>
+          <p class="step-instruction">Click on the "File" menu in the top navigation bar.</p>
+        </div>
+
+        <div class="guide-controls">
+          <button id="prevStepBtn" class="nav-btn" disabled>← Previous</button>
+          <button id="nextStepBtn" class="nav-btn">Next →</button>
+        </div>
+
+        <div class="guide-progress">
+          <div id="progressBar" class="progress-bar" style="width: 33%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span class="footer-text">Press <kbd>Ctrl+Shift+G</kbd> to open anytime</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

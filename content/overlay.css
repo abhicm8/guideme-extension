@@ -1,0 +1,33 @@
+/* GuideMe Overlay Styles */
+/* These styles are injected into every page for highlight effects */
+
+.guideme-highlight {
+  box-sizing: border-box;
+}
+
+.guideme-tooltip {
+  box-sizing: border-box;
+}
+
+.guideme-tooltip * {
+  box-sizing: border-box;
+}
+
+/* Ensure our elements are above everything */
+.guideme-highlight,
+.guideme-ring,
+.guideme-tooltip {
+  z-index: 2147483647 !important;
+}
+
+/* Backdrop for focusing attention (optional, can be enabled) */
+.guideme-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 2147483644;
+  pointer-events: none;
+}
