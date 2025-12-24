@@ -21,7 +21,63 @@ class GuideMeBackground {
           .catch(error => sendResponse({ error: error.message }));
         return true;
       }
+
+      // Macro Management
+      if (message.type === 'SAVE_MACRO') {
+        this.saveMacro(message.payload)
+          .then(result => sendResponse(result))
+          .catch(error => sendResponse({ error: error.message }));
+        return true;
+      }
+
+      if (message.type === 'GET_MACROS') {
+        this.getMacros()
+          .then(result => sendResponse(result))
+          .catch(error => sendResponse({ error: error.message }));
+        return true;
+      }
+
+      if (message.type === 'DELETE_MACRO') {
+        this.deleteMacro(message.payload)
+          .then(result => sendResponse(result))
+          .catch(error => sendResponse({ error: error.message }));
+        return true;
+      }
     });
+  }
+
+  // ============ MACRO MANAGEMENT ============
+  async saveMacro(payload) {
+    const { name, steps, startUrl, task } = payload;
+    const macros = await this.getMacros();
+    
+    const macro = {
+      id: `macro_${Date.now()}`,
+      name: name,
+      task: task,
+      steps: steps,
+      startUrl: startUrl,
+      startUrlPattern: new URL(startUrl).hostname,
+      createdAt: Date.now()
+    };
+    
+    macros.push(macro);
+    await chrome.storage.local.set({ guideme_macros: macros });
+    
+    return { success: true, macro };
+  }
+
+  async getMacros() {
+    const result = await chrome.storage.local.get(['guideme_macros']);
+    return result.guideme_macros || [];
+  }
+
+  async deleteMacro(payload) {
+    const { macroId } = payload;
+    const macros = await this.getMacros();
+    const filtered = macros.filter(m => m.id !== macroId);
+    await chrome.storage.local.set({ guideme_macros: filtered });
+    return { success: true };
   }
 
   async continueGuide(payload) {
@@ -55,33 +111,40 @@ class GuideMeBackground {
   }
 
   buildContinuationSystemPrompt() {
-    return `You are continuing to guide a user through a multi-page task. They clicked something and navigated to a new page.
+    return `You are continuing to guide a user through a multi-page task. The user clicked something and navigated to a new page or view.
 
-CRITICAL RULES:
-1. You will receive ACTUAL elements on this NEW page with unique IDs. Use ONLY these IDs.
-2. DO NOT suggest searching - continue guiding through visual navigation
-3. Look at what steps were already completed and continue from there
-4. Focus on elements that move toward completing the original task
+YOUR MISSION: Provide ALL steps needed on THIS PAGE to continue toward the goal.
+
+CRITICAL - GIVE ALL STEPS FOR CURRENT PAGE:
+- If 3 buttons need to be clicked on this page, include ALL 3 steps
+- If user can complete multiple actions without page navigation, include ALL of them
+- Only stop giving steps when the NEXT action would cause page navigation
+- This reduces API calls - we want ALL non-navigating steps in ONE response
+
+CRITICAL - WHEN TO MARK COMPLETED:
+- ONLY mark completed: true when the user is LITERALLY on the final screen
+- "Find Budgets page" → completed ONLY when user is ON the Budgets page
+- If user just clicked to navigate somewhere, completed should be FALSE
 
 OUTPUT FORMAT (JSON only):
 {
   "steps": [
-    {"elementId": "gm-5", "action": "click", "description": "Click on 'Element' to continue"}
+    {"elementId": "gm-5", "action": "click", "description": "Click on 'Settings' in the menu"},
+    {"elementId": "gm-12", "action": "click", "description": "Click on 'Billing' tab"},
+    {"elementId": "gm-18", "action": "click", "description": "Click on 'Budgets' option"}
   ],
   "canComplete": true,
-  "completed": false
+  "completed": false,
+  "progress": "In Settings menu, navigating to Budgets"
 }
 
-If the task appears to be COMPLETE (user reached the final destination), return:
-{ "steps": [], "canComplete": true, "completed": true }
-
 RULES:
-1. ONLY use element IDs from the provided list
-2. NEVER suggest "search for X" - guide through clicking menu items
-3. Focus on what's needed on THIS page to continue the task
-4. Consider what steps were already completed
-5. If the user is now on the target page (e.g., profile page for "change profile picture"), guide them to the specific action
-6. If no more navigation needed and task is complete, mark completed: true`;
+1. Include ALL clickable steps until a navigation event would occur
+2. Use ONLY element IDs from the provided list
+3. DO NOT suggest searching - guide through clicking visible elements
+4. If multiple steps can be done on this page, include ALL of them
+5. NEVER mark completed:true unless the FINAL destination is reached
+6. If stuck with no path forward, set canComplete: false`;
   }
 
   buildContinuationUserPrompt(task, completedSteps, url, title, dom) {
@@ -139,27 +202,52 @@ What steps are needed on THIS page to continue the task? Use element IDs from ab
 INPUT: You receive a list of ACTUAL clickable elements with unique IDs (like "gm-5").
 OUTPUT: JSON with steps referencing these exact IDs.
 
-CRITICAL RULES:
-1. ONLY use element IDs from the provided list - never guess or make up IDs
-2. DO NOT suggest using search boxes - guide through visual menu navigation
-3. Each step = ONE click on ONE element
-4. Be specific: if multiple similar elements exist, pick the correct one based on location (sidebar vs main)
+CRITICAL - PROVIDE ALL STEPS FOR THIS PAGE:
+- Include ALL steps that can be completed on the current page
+- If 3 buttons need clicking before navigation, include ALL 3 in one response
+- Only stop at steps that would cause page navigation (links to new pages)
+- This is important to minimize API calls!
+
+CRITICAL - UNDERSTANDING MULTI-PAGE TASKS:
+Most tasks require MULTIPLE pages/screens. Examples:
+- "Go to billing settings" = Click menu → Click Settings → Click Billing (3+ pages!)
+- "Find the Budgets page" = Click profile → Click Settings → Click Billing → Click Budgets (4+ pages!)
+- These are NOT single-step tasks!
+
+YOUR JOB ON THIS PAGE:
+1. Look at all clickable elements available
+2. Find element(s) that move toward the goal
+3. Return steps for THIS page only
+4. Set willNavigate: true if any step causes navigation
+5. NEVER set completed: true unless user is LITERALLY at final destination
 
 OUTPUT FORMAT:
 {
   "steps": [
-    {"elementId": "gm-5", "action": "click", "description": "In the left sidebar, click 'Settings'"},
-    {"elementId": "gm-12", "action": "click", "description": "Click 'Profile' to open profile settings"}
+    {"elementId": "gm-5", "action": "click", "description": "In the header, click your profile picture to open the menu"}
   ],
-  "canComplete": true
+  "canComplete": true,
+  "completed": false,
+  "willNavigate": true,
+  "navigationHint": "This opens a menu - we'll continue from there"
 }
 
-STEP DESCRIPTIONS MUST:
-- Say WHERE the element is (sidebar, header, main area, dropdown)
-- Say the EXACT text of the element in quotes
-- Be specific enough that a human could find it without the highlight
+COMPLETED FIELD:
+- completed: false = More steps needed after this (DEFAULT for navigation tasks!)
+- completed: true = ONLY when literally on the FINAL screen (e.g., Billing page is showing)
 
-ACTIONS: click (most common), type (only for input fields), scroll`;
+For "billing settings" on GitHub home page:
+- Step 1: Click profile menu → completed: FALSE (just opening menu)
+- After menu opens, Step 2: Click Settings → completed: FALSE (going to settings)
+- After settings loads, Step 3: Click Billing → completed: TRUE (now on billing!)
+
+RULES:
+1. ONLY use element IDs from the provided list - never invent IDs
+2. DO NOT suggest using search boxes - guide through visual navigation
+3. Each step = ONE click action
+4. Be specific: say WHERE (header, sidebar) and WHAT text to click
+5. If step causes navigation, only include steps up to that point
+6. DEFAULT to completed: false for any task involving navigation`;
   }
 
   buildUserPrompt(task, url, title, dom) {
@@ -299,8 +387,9 @@ Do NOT suggest using search - navigate through the menus and buttons shown.`;
       }
     }
     
-    // If all models failed
-    throw new Error(`All Gemini models failed. ${lastError}. Please wait a moment and try again.`);
+    // If all models failed, add helpful message
+    console.error('GuideMe: All Gemini models exhausted. Last error:', lastError);
+    throw new Error(`API rate limited. Please wait 10-15 seconds and try again. (${lastError})`);
   }
 
   async callAnthropic(apiKey, systemPrompt, userPrompt) {
@@ -433,10 +522,14 @@ Do NOT suggest using search - navigate through the menus and buttons shown.`;
       }));
 
       console.log('GuideMe: Parsed steps:', validatedSteps);
+      console.log('GuideMe: completed:', parsed.completed, 'willNavigate:', parsed.willNavigate);
 
       return {
         steps: validatedSteps,
         canComplete: parsed.canComplete !== false,
+        completed: parsed.completed === true,  // Must explicitly be true
+        willNavigate: parsed.willNavigate === true,
+        progress: parsed.progress || parsed.navigationHint || null,
         note: parsed.note || parsed.message || null
       };
     } catch (error) {

@@ -3,11 +3,16 @@ class GuideMePopup {
   constructor() {
     this.currentSteps = [];
     this.currentStepIndex = 0;
+    this.currentTask = '';
+    this.currentUrl = '';
     this.settings = {
       apiProvider: 'gemini',  // Default to free Gemini
       apiKey: '',
       highlightColor: '#4F46E5'
     };
+
+    // Voice recognition
+    this.isListening = false;
 
     this.init();
   }
@@ -17,6 +22,7 @@ class GuideMePopup {
     this.bindElements();
     this.bindEvents();
     this.updateSiteName();
+    this.setupVoiceRecognition();
   }
 
   bindElements() {
@@ -24,6 +30,7 @@ class GuideMePopup {
     this.mainView = document.getElementById('mainView');
     this.settingsView = document.getElementById('settingsView');
     this.guideView = document.getElementById('guideView');
+    this.savedGuidesView = document.getElementById('savedGuidesView');
 
     // Main view elements
     this.siteName = document.getElementById('siteName');
@@ -31,6 +38,17 @@ class GuideMePopup {
     this.guideBtn = document.getElementById('guideBtn');
     this.statusMessage = document.getElementById('statusMessage');
     this.quickBtns = document.querySelectorAll('.quick-btn');
+    this.autoSaveToggle = document.getElementById('autoSaveToggle');
+
+    // Voice elements
+    this.voiceBtn = document.getElementById('voiceBtn');
+    this.voiceStatus = document.getElementById('voiceStatus');
+
+    // Saved Guides elements
+    this.savedGuidesBtn = document.getElementById('savedGuidesBtn');
+    this.backFromSavedBtn = document.getElementById('backFromSavedBtn');
+    this.savedGuidesList = document.getElementById('savedGuidesList');
+    this.noSavedGuides = document.getElementById('noSavedGuides');
 
     // Settings elements
     this.settingsBtn = document.getElementById('settingsBtn');
@@ -43,16 +61,25 @@ class GuideMePopup {
 
     // Guide view elements
     this.stopGuideBtn = document.getElementById('stopGuideBtn');
+    this.saveCurrentGuideBtn = document.getElementById('saveCurrentGuideBtn');
     this.currentStep = document.getElementById('currentStep');
     this.prevStepBtn = document.getElementById('prevStepBtn');
     this.nextStepBtn = document.getElementById('nextStepBtn');
     this.progressBar = document.getElementById('progressBar');
+
+    // Modal elements
+    this.saveMacroModal = document.getElementById('saveMacroModal');
+    this.macroNameInput = document.getElementById('macroNameInput');
+    this.cancelMacroBtn = document.getElementById('cancelMacroBtn');
+    this.confirmSaveMacroBtn = document.getElementById('confirmSaveMacroBtn');
   }
 
   bindEvents() {
     // Navigation
     this.settingsBtn.addEventListener('click', () => this.showView('settings'));
+    this.savedGuidesBtn.addEventListener('click', () => this.showView('savedGuides'));
     this.backBtn.addEventListener('click', () => this.showView('main'));
+    this.backFromSavedBtn.addEventListener('click', () => this.showView('main'));
     this.stopGuideBtn.addEventListener('click', () => this.stopGuide());
 
     // Main actions
@@ -63,6 +90,17 @@ class GuideMePopup {
         this.startGuide();
       }
     });
+
+    // Voice input
+    this.voiceBtn.addEventListener('click', () => this.toggleVoice());
+
+    // Auto-save toggle
+    this.autoSaveToggle.addEventListener('change', () => this.saveAutoSaveSetting());
+
+    // Save Guide
+    this.saveCurrentGuideBtn.addEventListener('click', () => this.showSaveMacroModal());
+    this.cancelMacroBtn.addEventListener('click', () => this.hideSaveMacroModal());
+    this.confirmSaveMacroBtn.addEventListener('click', () => this.saveMacro());
 
     // Quick buttons
     this.quickBtns.forEach(btn => {
@@ -81,6 +119,257 @@ class GuideMePopup {
     this.nextStepBtn.addEventListener('click', () => this.navigateStep(1));
   }
 
+  // ============ VOICE RECOGNITION (runs directly in popup - visible UI context) ============
+  setupVoiceRecognition() {
+    // SpeechRecognition MUST run in popup (visible UI) - offscreen documents don't support it
+    this.recognition = null;
+    console.log('Voice recognition setup - will run directly in popup');
+  }
+
+  async toggleVoice() {
+    // If already listening, stop
+    if (this.isListening) {
+      this.stopVoice();
+      return;
+    }
+
+    // Start voice recognition
+    this.startVoiceRecognition();
+  }
+
+  startVoiceRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      this.showStatus('🎤 Speech recognition not supported in this browser.', 'error');
+      return;
+    }
+
+    // Show listening UI
+    this.voiceBtn.classList.add('listening');
+    this.voiceStatus.classList.remove('hidden');
+    this.isListening = true;
+    this.taskInput.value = '';
+    this.taskInput.placeholder = 'Listening...';
+
+    this.recognition = new SpeechRecognition();
+    this.recognition.lang = 'en-US';
+    this.recognition.continuous = false;
+    this.recognition.interimResults = true;
+    this.recognition.maxAlternatives = 1;
+
+    this.recognition.onstart = () => {
+      console.log('Voice recognition started');
+    };
+
+    this.recognition.onresult = (event) => {
+      let transcript = '';
+      let isFinal = false;
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript = event.results[i][0].transcript;
+        isFinal = event.results[i].isFinal;
+      }
+
+      this.taskInput.value = transcript;
+
+      if (isFinal) {
+        this.stopVoiceUI();
+        // Auto-start guide after final transcript
+        if (transcript.trim()) {
+          setTimeout(() => this.startGuide(), 300);
+        }
+      }
+    };
+
+    this.recognition.onerror = (event) => {
+      console.error('Voice recognition error:', event.error);
+      this.stopVoiceUI();
+      
+      if (event.error === 'not-allowed') {
+        this.showStatus('🎤 Microphone blocked. Click the mic icon in address bar to allow.', 'error');
+      } else if (event.error === 'no-speech') {
+        this.showStatus('🎤 No speech detected. Try again.', 'error');
+      } else if (event.error === 'network') {
+        this.showStatus('🎤 Network error. Check your connection.', 'error');
+      } else {
+        this.showStatus('🎤 Voice error: ' + event.error, 'error');
+      }
+    };
+
+    this.recognition.onend = () => {
+      console.log('Voice recognition ended');
+      this.stopVoiceUI();
+    };
+
+    try {
+      this.recognition.start();
+    } catch (error) {
+      console.error('Failed to start voice recognition:', error);
+      this.stopVoiceUI();
+      this.showStatus('🎤 Failed to start voice recognition.', 'error');
+    }
+  }
+
+  stopVoice() {
+    if (this.recognition) {
+      this.recognition.abort();
+      this.recognition = null;
+    }
+    this.stopVoiceUI();
+  }
+
+  stopVoiceUI() {
+    this.isListening = false;
+    this.voiceBtn.classList.remove('listening');
+    this.voiceStatus.classList.add('hidden');
+    this.taskInput.placeholder = 'e.g., How do I create a new project?\ne.g., Where can I change my password?\ne.g., Help me export this as PDF';
+  }
+
+  // ============ SAVED GUIDES (MACROS) ============
+  async loadSavedGuides() {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'GET_MACROS' });
+      const guides = response || [];
+      this.renderSavedGuides(guides);
+    } catch (error) {
+      console.error('Failed to load saved guides:', error);
+    }
+  }
+
+  renderSavedGuides(guides) {
+    if (guides.length === 0) {
+      this.savedGuidesList.classList.add('hidden');
+      this.noSavedGuides.classList.remove('hidden');
+      return;
+    }
+
+    this.savedGuidesList.classList.remove('hidden');
+    this.noSavedGuides.classList.add('hidden');
+
+    this.savedGuidesList.innerHTML = guides.map(guide => `
+      <div class="saved-guide-item" data-guide-id="${guide.id}">
+        <span class="saved-guide-icon">📋</span>
+        <div class="saved-guide-info">
+          <div class="saved-guide-name">${this.escapeHtml(guide.name)}</div>
+          <div class="saved-guide-meta">
+            ${guide.startUrlPattern} • ${guide.steps?.length || 0} steps
+          </div>
+        </div>
+        <button class="saved-guide-delete" data-guide-id="${guide.id}" title="Delete guide">🗑️</button>
+      </div>
+    `).join('');
+
+    // Bind click events
+    this.savedGuidesList.querySelectorAll('.saved-guide-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        if (!e.target.classList.contains('saved-guide-delete')) {
+          this.playSavedGuide(item.dataset.guideId);
+        }
+      });
+    });
+
+    this.savedGuidesList.querySelectorAll('.saved-guide-delete').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.deleteSavedGuide(btn.dataset.guideId);
+      });
+    });
+  }
+
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  showSaveMacroModal() {
+    this.macroNameInput.value = this.currentTask;
+    this.saveMacroModal.classList.remove('hidden');
+    this.macroNameInput.focus();
+  }
+
+  hideSaveMacroModal() {
+    this.saveMacroModal.classList.add('hidden');
+  }
+
+  async saveMacro() {
+    const name = this.macroNameInput.value.trim();
+    if (!name) {
+      this.macroNameInput.style.borderColor = '#dc2626';
+      return;
+    }
+
+    try {
+      await chrome.runtime.sendMessage({
+        type: 'SAVE_MACRO',
+        payload: {
+          name: name,
+          task: this.currentTask,
+          steps: this.currentSteps,
+          startUrl: this.currentUrl
+        }
+      });
+
+      this.hideSaveMacroModal();
+      this.showStatus('✅ Guide saved! Find it in 📚 Saved Guides.', 'success');
+    } catch (error) {
+      console.error('Failed to save guide:', error);
+      this.showStatus('Failed to save guide', 'error');
+    }
+  }
+
+  async deleteSavedGuide(guideId) {
+    try {
+      await chrome.runtime.sendMessage({
+        type: 'DELETE_MACRO',
+        payload: { macroId: guideId }
+      });
+      this.loadSavedGuides();
+    } catch (error) {
+      console.error('Failed to delete guide:', error);
+    }
+  }
+
+  async playSavedGuide(guideId) {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'GET_MACROS' });
+      const guide = (response || []).find(g => g.id === guideId);
+      
+      if (!guide) {
+        this.showStatus('Guide not found', 'error');
+        return;
+      }
+
+      // Get current tab
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      
+      this.currentTask = guide.task;
+      this.currentSteps = guide.steps;
+      this.currentStepIndex = 0;
+      this.currentUrl = tab.url;
+
+      // Send steps to content script (no AI needed!)
+      await chrome.tabs.sendMessage(tab.id, {
+        type: 'START_GUIDE',
+        payload: {
+          steps: this.currentSteps,
+          highlightColor: this.settings.highlightColor,
+          task: guide.task,
+          isMacro: true
+        }
+      });
+
+      this.showView('guide');
+      this.renderCurrentStep();
+      this.showStatus('▶️ Playing guide: ' + guide.name, 'success');
+
+    } catch (error) {
+      console.error('Failed to play guide:', error);
+      this.showStatus('Failed to play guide. Make sure you\'re on a webpage.', 'error');
+    }
+  }
+
   updateProviderHint() {
     const hints = {
       gemini: '🆓 Get free key at aistudio.google.com',
@@ -92,10 +381,13 @@ class GuideMePopup {
 
   async loadSettings() {
     try {
-      const result = await chrome.storage.local.get(['apiProvider', 'apiKey', 'highlightColor']);
+      const result = await chrome.storage.local.get(['apiProvider', 'apiKey', 'highlightColor', 'autoSaveGuides']);
       if (result.apiProvider) this.settings.apiProvider = result.apiProvider;
       if (result.apiKey) this.settings.apiKey = result.apiKey;
       if (result.highlightColor) this.settings.highlightColor = result.highlightColor;
+      
+      // Auto-save defaults to true
+      this.settings.autoSaveGuides = result.autoSaveGuides !== false;
 
       // Update form
       if (this.apiProvider) {
@@ -103,8 +395,23 @@ class GuideMePopup {
         this.apiKey.value = this.settings.apiKey;
         this.highlightColor.value = this.settings.highlightColor;
       }
+      
+      // Update auto-save toggle
+      if (this.autoSaveToggle) {
+        this.autoSaveToggle.checked = this.settings.autoSaveGuides;
+      }
     } catch (error) {
       console.error('Failed to load settings:', error);
+    }
+  }
+
+  async saveAutoSaveSetting() {
+    this.settings.autoSaveGuides = this.autoSaveToggle.checked;
+    try {
+      await chrome.storage.local.set({ autoSaveGuides: this.settings.autoSaveGuides });
+      console.log('Auto-save setting:', this.settings.autoSaveGuides);
+    } catch (error) {
+      console.error('Failed to save auto-save setting:', error);
     }
   }
 
@@ -140,6 +447,7 @@ class GuideMePopup {
     this.mainView.classList.add('hidden');
     this.settingsView.classList.add('hidden');
     this.guideView.classList.add('hidden');
+    this.savedGuidesView.classList.add('hidden');
 
     switch (view) {
       case 'main':
@@ -155,6 +463,10 @@ class GuideMePopup {
         break;
       case 'guide':
         this.guideView.classList.remove('hidden');
+        break;
+      case 'savedGuides':
+        this.savedGuidesView.classList.remove('hidden');
+        this.loadSavedGuides();
         break;
     }
   }
@@ -188,6 +500,10 @@ class GuideMePopup {
     try {
       // Get current tab
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      
+      // Store for macro saving
+      this.currentTask = task;
+      this.currentUrl = tab.url;
       
       // Request DOM from content script
       const domData = await this.getDOMFromPage(tab.id);
@@ -328,6 +644,8 @@ class GuideMePopup {
 
     this.currentSteps = [];
     this.currentStepIndex = 0;
+    this.currentTask = '';
+    this.currentUrl = '';
     this.showView('main');
     this.hideStatus();
   }

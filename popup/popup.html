@@ -14,7 +14,10 @@
         <span class="logo-icon">🎯</span>
         <span class="logo-text">GuideMe</span>
       </div>
-      <button id="settingsBtn" class="icon-btn" title="Settings">⚙️</button>
+      <div class="header-actions">
+        <button id="savedGuidesBtn" class="icon-btn" title="Saved Guides">📚</button>
+        <button id="settingsBtn" class="icon-btn" title="Settings">⚙️</button>
+      </div>
     </header>
 
     <!-- Main View -->
@@ -26,12 +29,21 @@
 
       <div class="input-section">
         <label for="taskInput" class="input-label">What do you want to do?</label>
-        <textarea 
-          id="taskInput" 
-          class="task-input" 
-          placeholder="e.g., How do I create a new project?&#10;e.g., Where can I change my password?&#10;e.g., Help me export this as PDF"
-          rows="3"
-        ></textarea>
+        <div class="input-wrapper">
+          <textarea 
+            id="taskInput" 
+            class="task-input" 
+            placeholder="e.g., How do I create a new project?&#10;e.g., Where can I change my password?&#10;e.g., Help me export this as PDF"
+            rows="3"
+          ></textarea>
+          <button id="voiceBtn" class="voice-btn" title="Voice input (click to speak)">
+            🎤
+          </button>
+        </div>
+        <div id="voiceStatus" class="voice-status hidden">
+          <span class="voice-indicator"></span>
+          <span class="voice-text">🎤 Speak now - a voice popup will appear on the page...</span>
+        </div>
         <button id="guideBtn" class="guide-btn">
           <span class="btn-icon">✨</span>
           Guide Me
@@ -39,6 +51,16 @@
       </div>
 
       <div id="statusMessage" class="status-message hidden"></div>
+
+      <!-- Auto-save Toggle -->
+      <div class="auto-save-section">
+        <label class="toggle-wrapper">
+          <input type="checkbox" id="autoSaveToggle" checked>
+          <span class="toggle-slider"></span>
+          <span class="toggle-label">Auto-save guides</span>
+        </label>
+        <span class="auto-save-hint">Saves completed guides automatically</span>
+      </div>
 
       <!-- Quick Actions -->
       <div class="quick-actions">
@@ -48,6 +70,26 @@
         <button class="quick-btn" data-task="How do I sign up or login?">Login</button>
       </div>
     </main>
+
+    <!-- Saved Guides View -->
+    <div id="savedGuidesView" class="saved-guides-view hidden">
+      <div class="settings-header">
+        <button id="backFromSavedBtn" class="icon-btn">←</button>
+        <h2>📚 Saved Guides</h2>
+      </div>
+
+      <div class="saved-guides-content">
+        <p class="saved-guides-desc">Replay saved guides instantly without using AI.</p>
+        <div id="savedGuidesList" class="saved-guides-list">
+          <!-- Guides will be populated here -->
+        </div>
+        <div id="noSavedGuides" class="no-saved-guides">
+          <span class="no-guides-icon">📭</span>
+          <p>No saved guides yet</p>
+          <p class="no-guides-hint">Complete a guide and click "Save" to add it here</p>
+        </div>
+      </div>
+    </div>
 
     <!-- Settings View -->
     <div id="settingsView" class="settings-view hidden">
@@ -107,6 +149,31 @@
 
         <div class="guide-progress">
           <div id="progressBar" class="progress-bar" style="width: 33%"></div>
+        </div>
+
+        <!-- Save Guide Section - Always visible during guide -->
+        <div class="save-guide-section">
+          <button id="saveCurrentGuideBtn" class="save-guide-btn">
+            <span>💾</span> Save This Guide
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Save Macro Modal -->
+    <div id="saveMacroModal" class="modal hidden">
+      <div class="modal-content">
+        <h3>💾 Save Guide</h3>
+        <p class="modal-desc">Save this guide to replay anytime without using AI.</p>
+        <input 
+          type="text" 
+          id="macroNameInput" 
+          class="macro-name-input" 
+          placeholder="e.g., GitHub - Find Budgets Page"
+        >
+        <div class="modal-actions">
+          <button id="cancelMacroBtn" class="modal-btn cancel">Cancel</button>
+          <button id="confirmSaveMacroBtn" class="modal-btn confirm">Save</button>
         </div>
       </div>
     </div>

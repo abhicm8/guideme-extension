@@ -6,6 +6,11 @@ class GuideMeContent {
     this.currentSteps = [];
     this.currentStepIndex = 0;
     this.completedSteps = []; // Track completed steps across pages
+    this.totalStepsCompleted = 0; // Total steps done in this session
+    this.isMultiPageTask = false; // Flag for multi-page tasks
+    this.isSavedGuideReplay = false; // Flag for replaying saved guides (no AI)
+    this.allStepsForSaving = []; // Store ALL steps for auto-save
+    this.visitedUrls = []; // Track visited URLs to detect back navigation
     this.highlightColor = '#4F46E5';
     this.overlayElements = [];
     this.controlPanel = null;
@@ -18,6 +23,16 @@ class GuideMeContent {
     this.isGuideActive = false;
     this.originalTask = '';
     
+    // SPA Navigation Detection
+    this.lastUrl = window.location.href;
+    this.urlCheckInterval = null;
+    this.popstateHandler = null;
+    this.originalPushState = null;
+    this.originalReplaceState = null;
+
+    // Voice overlay tracking (recognition runs in offscreen document)
+    this.voiceOverlayVisible = false;
+    
     this.init();
   }
 
@@ -28,11 +43,127 @@ class GuideMeContent {
       return true;
     });
 
+    // Setup SPA navigation detection (for YouTube, Gmail, etc.)
+    this.setupSPADetection();
+    
+    // Setup visibility change detection (for new tab scenarios)
+    this.setupVisibilityDetection();
+
     // Check for saved guide state on page load (for cross-page navigation)
     this.checkForSavedGuide();
   }
+  
+  setupVisibilityDetection() {
+    // Detect when user switches to another tab
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.isGuideActive) {
+        console.log('GuideMe: Tab hidden - pausing guide state');
+        // When tab becomes hidden, if guide is active, mark for potential cleanup
+        // This handles the case where user clicks a link that opens new tab
+        this.tabHiddenTime = Date.now();
+      } else if (!document.hidden && this.tabHiddenTime) {
+        // Tab became visible again
+        const hiddenDuration = Date.now() - this.tabHiddenTime;
+        console.log('GuideMe: Tab visible again, was hidden for', hiddenDuration, 'ms');
+        
+        // If tab was hidden for a while (user was in another tab), 
+        // and we have a guide active, check if we should stop
+        if (hiddenDuration > 5000 && this.isGuideActive) {
+          // User spent significant time in another tab - likely following guide there
+          // Stop the guide in this tab to prevent confusion
+          console.log('GuideMe: Guide likely continued in another tab, stopping here');
+          this.stopGuide();
+        }
+        this.tabHiddenTime = null;
+      }
+    });
+  }
+
+  setupSPADetection() {
+    // Method 1: Listen for popstate (browser back/forward)
+    this.popstateHandler = () => {
+      this.handleSPANavigation('popstate');
+    };
+    window.addEventListener('popstate', this.popstateHandler);
+
+    // Method 2: Intercept pushState and replaceState (SPA navigation)
+    this.originalPushState = history.pushState.bind(history);
+    this.originalReplaceState = history.replaceState.bind(history);
+
+    const self = this;
+    history.pushState = function(...args) {
+      self.originalPushState(...args);
+      self.handleSPANavigation('pushState');
+    };
+    history.replaceState = function(...args) {
+      self.originalReplaceState(...args);
+      self.handleSPANavigation('replaceState');
+    };
+
+    // Method 3: Fallback URL polling for edge cases (every 500ms)
+    this.urlCheckInterval = setInterval(() => {
+      if (window.location.href !== this.lastUrl) {
+        this.handleSPANavigation('polling');
+      }
+    }, 500);
+
+    console.log('GuideMe: SPA navigation detection enabled');
+  }
+
+  handleSPANavigation(source) {
+    const newUrl = window.location.href;
+    if (newUrl === this.lastUrl) return; // No actual change
+    
+    console.log(`GuideMe: SPA navigation detected via ${source}:`, newUrl);
+    this.lastUrl = newUrl;
+
+    // Only continue if we have an active guide
+    if (!this.isGuideActive && !this.originalTask) {
+      // No active guide - don't auto-resume on navigation
+      // User must explicitly start a new guide
+      console.log('GuideMe: No active guide, ignoring navigation');
+      return;
+    }
+
+    // For SAVED GUIDE REPLAYS - use remaining steps, NO AI call
+    if (this.isSavedGuideReplay) {
+      console.log('GuideMe: Saved guide - using remaining steps, no AI call');
+      // Re-scan DOM for fresh element IDs
+      setTimeout(() => {
+        this.extractDOM();
+        if (this.currentSteps.length > this.currentStepIndex + 1) {
+          // Move to next step
+          this.currentStepIndex++;
+          this.highlightStep(this.currentStepIndex);
+          this.updateControlPanel();
+        } else {
+          // No more steps
+          this.showFinalCompletion();
+        }
+      }, 800);
+      return;
+    }
+
+    // LIVE GUIDE - save state for potential navigation
+    if (this.originalTask) {
+      this.saveStateForNavigation();
+      
+      // Wait for new content to load, then continue
+      setTimeout(async () => {
+        await this.waitForPageReady();
+        console.log('GuideMe: Requesting AI continuation after SPA navigation...');
+        this.requestGuideContinuation();
+      }, 800);
+    }
+  }
 
   async checkForSavedGuide() {
+    // Don't re-activate if guide is already running
+    if (this.isGuideActive) {
+      console.log('GuideMe: Guide already active, skipping check');
+      return;
+    }
+    
     try {
       // Check chrome.storage first
       let guideState = null;
@@ -56,35 +187,81 @@ class GuideMeContent {
         }
       } catch (e) {}
       
-      if (guideState && guideState.task) {
-        // Check if state is expired (older than 2 minutes)
-        const stateAge = Date.now() - (guideState.savedAt || 0);
-        const MAX_AGE = 2 * 60 * 1000; // 2 minutes
-        
-        if (stateAge > MAX_AGE) {
-          console.log('GuideMe: Saved state expired, clearing...');
-          this.clearGuideState();
-          localStorage.removeItem('guideme_backup');
-          return;
-        }
-        
-        console.log('GuideMe: Found saved guide task:', guideState.task);
-        console.log('GuideMe: Completed steps:', guideState.completedSteps?.length || 0);
-        console.log('GuideMe: State age:', Math.round(stateAge / 1000), 'seconds');
-        
-        this.originalTask = guideState.task;
-        this.highlightColor = guideState.highlightColor || '#4F46E5';
-        this.completedSteps = guideState.completedSteps || [];
-        
-        // Wait for page to be fully interactive
-        await this.waitForPageReady();
-        
-        // Always request continuation on new page load (fresh DOM analysis)
-        console.log('GuideMe: Requesting guide continuation for new page...');
+      // Check if guide was marked as completed - DO NOT RESUME
+      if (!guideState || guideState.completed || !guideState.task) {
+        console.log('GuideMe: No active guide to resume or guide completed');
+        this.clearGuideState();
+        return;
+      }
+      
+      // Check if state is expired (older than 2 minutes)
+      const stateAge = Date.now() - (guideState.savedAt || 0);
+      const MAX_AGE = 2 * 60 * 1000; // 2 minutes
+      
+      if (stateAge > MAX_AGE) {
+        console.log('GuideMe: Saved state expired, clearing...');
+        this.clearGuideState();
+        return;
+      }
+      
+      // Check if this is a FORWARD navigation (not back button)
+      // Back navigation = URL we've seen before without explicit action
+      // We should NOT auto-resume on back button - it causes the loop
+      const isBackNavigation = this.wasUrlVisited(window.location.href);
+      if (isBackNavigation && !guideState.remainingSteps?.length) {
+        console.log('GuideMe: Back navigation detected, not auto-resuming');
+        this.clearGuideState();
+        return;
+      }
+      
+      console.log('GuideMe: Found saved guide task:', guideState.task);
+      console.log('GuideMe: Remaining steps:', guideState.remainingSteps?.length || 0);
+      
+      this.originalTask = guideState.task;
+      this.highlightColor = guideState.highlightColor || '#4F46E5';
+      this.completedSteps = guideState.completedSteps || [];
+      this.isSavedGuideReplay = guideState.isSavedGuideReplay || false;
+      this.allStepsForSaving = guideState.allStepsForSaving || [];
+      this.visitedUrls = guideState.visitedUrls || [];
+      
+      // Mark current URL as visited
+      this.markUrlVisited(window.location.href);
+      
+      // Wait for page to be fully interactive
+      await this.waitForPageReady();
+      
+      // Check if we have remaining steps
+      if (guideState.remainingSteps && guideState.remainingSteps.length > 0) {
+        console.log('GuideMe: Continuing with', guideState.remainingSteps.length, 'remaining steps');
+        this.extractDOM();
+        this.currentSteps = guideState.remainingSteps;
+        this.currentStepIndex = 0;
+        this.isMultiPageTask = true;
+        this.startGuide();
+        this.saveGuideState();
+      } else if (!this.isSavedGuideReplay) {
+        // Live guide needs AI - but only if forward navigation
+        console.log('GuideMe: Requesting AI for new page...');
         this.requestGuideContinuation();
+      } else {
+        // Saved guide with no remaining steps = complete
+        console.log('GuideMe: Saved guide completed');
+        this.showTaskCompleted();
       }
     } catch (error) {
-      console.log('GuideMe: No saved guide found', error);
+      console.log('GuideMe: Error checking saved guide:', error);
+    }
+  }
+  
+  // Track visited URLs to detect back navigation
+  wasUrlVisited(url) {
+    return (this.visitedUrls || []).includes(url);
+  }
+  
+  markUrlVisited(url) {
+    if (!this.visitedUrls) this.visitedUrls = [];
+    if (!this.visitedUrls.includes(url)) {
+      this.visitedUrls.push(url);
     }
   }
 
@@ -103,13 +280,24 @@ class GuideMeContent {
   }
 
   saveStateForNavigation() {
+    // Calculate remaining steps (steps after current one)
+    const remainingSteps = this.currentSteps.slice(this.currentStepIndex + 1);
+    
+    // Mark current URL as visited
+    this.markUrlVisited(window.location.href);
+    
     // Save state immediately for potential navigation
     const guideState = {
       task: this.originalTask,
       completedSteps: this.completedSteps,
       highlightColor: this.highlightColor,
       pageUrl: '', // Clear so new page triggers continuation
-      savedAt: Date.now()
+      savedAt: Date.now(),
+      // Save remaining steps and replay flag to avoid AI calls on saved guides
+      remainingSteps: remainingSteps,
+      isSavedGuideReplay: this.isSavedGuideReplay,
+      allStepsForSaving: this.allStepsForSaving || [],
+      visitedUrls: this.visitedUrls || []
     };
     
     // Save to both storages for reliability
@@ -118,7 +306,7 @@ class GuideMeContent {
       localStorage.setItem('guideme_backup', JSON.stringify(guideState));
     } catch (e) {}
     
-    console.log('GuideMe: State saved for navigation');
+    console.log('GuideMe: State saved for navigation, remaining steps:', remainingSteps.length);
   }
 
   async requestGuideContinuation() {
@@ -191,14 +379,56 @@ class GuideMeContent {
 
   showContinuationError(message) {
     this.hideContinuationLoading();
-    // Could show error UI - for now just log
     console.error('GuideMe: Could not continue guide:', message);
-    this.clearGuideState();
+    
+    // DON'T clear state - show retry UI instead
+    // Create error panel with retry button
+    const panel = document.createElement('div');
+    panel.id = 'guideme-error-panel';
+    const isRateLimit = message.toLowerCase().includes('rate') || message.toLowerCase().includes('limit') || message.toLowerCase().includes('quota');
+    
+    panel.innerHTML = `
+      <div style="position:fixed;bottom:20px;right:20px;background:#1f2937;color:white;padding:20px 24px;border-radius:16px;font-family:system-ui;z-index:2147483647;box-shadow:0 10px 40px rgba(0,0,0,0.4);max-width:320px;">
+        <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;">
+          <span style="font-size:24px;">${isRateLimit ? '⏳' : '⚠️'}</span>
+          <div>
+            <div style="font-weight:600;margin-bottom:4px;">${isRateLimit ? 'API Rate Limited' : 'Connection Issue'}</div>
+            <div style="font-size:13px;opacity:0.8;">${isRateLimit ? 'Too many requests. Wait 10-15 seconds.' : message}</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;">
+          <button id="guideme-retry-btn" style="flex:1;padding:10px 16px;background:#4F46E5;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;transition:background 0.2s;">
+            🔄 Retry Now
+          </button>
+          <button id="guideme-cancel-btn" style="padding:10px 16px;background:#374151;color:white;border:none;border-radius:8px;cursor:pointer;transition:background 0.2s;">
+            ✕ Cancel
+          </button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(panel);
+    
+    // Bind events
+    document.getElementById('guideme-retry-btn').addEventListener('click', () => {
+      panel.remove();
+      this.requestGuideContinuation();
+    });
+    document.getElementById('guideme-cancel-btn').addEventListener('click', () => {
+      panel.remove();
+      this.clearGuideState();
+    });
   }
 
   showTaskCompleted() {
     this.hideContinuationLoading();
+    
+    // IMMEDIATELY clear all state to prevent re-activation
+    this.isGuideActive = false;
     this.clearGuideState();
+    try {
+      localStorage.removeItem('guideme_backup');
+    } catch (e) {}
+    console.log('GuideMe: Task completed - all state cleared');
     
     const panel = document.createElement('div');
     panel.innerHTML = `
@@ -209,6 +439,179 @@ class GuideMeContent {
     `;
     document.body.appendChild(panel);
     setTimeout(() => panel.remove(), 4000);
+  }
+
+  // ============ SAVE GUIDE FROM FLOATING PANEL ============
+  showSaveGuideModal() {
+    // Remove existing modal if any
+    const existingModal = document.getElementById('guideme-save-modal');
+    if (existingModal) existingModal.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'guideme-save-modal';
+    modal.innerHTML = `
+      <div class="guideme-save-modal-backdrop"></div>
+      <div class="guideme-save-modal-content">
+        <h3>💾 Save This Guide</h3>
+        <p>Save to replay anytime without using AI.</p>
+        <input type="text" class="guideme-save-name-input" placeholder="e.g., GitHub - Create Repo" value="${this.originalTask || 'My Guide'}">
+        <div class="guideme-save-modal-actions">
+          <button class="guideme-save-cancel-btn">Cancel</button>
+          <button class="guideme-save-confirm-btn">Save Guide</button>
+        </div>
+      </div>
+      <style>
+        #guideme-save-modal {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          z-index: 2147483647;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-family: system-ui, -apple-system, sans-serif;
+        }
+        .guideme-save-modal-backdrop {
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0.5);
+        }
+        .guideme-save-modal-content {
+          position: relative;
+          background: white;
+          border-radius: 16px;
+          padding: 24px;
+          width: 340px;
+          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+          animation: guideme-modal-appear 0.2s ease;
+        }
+        @keyframes guideme-modal-appear {
+          from { opacity: 0; transform: scale(0.95); }
+          to { opacity: 1; transform: scale(1); }
+        }
+        .guideme-save-modal-content h3 {
+          margin: 0 0 8px 0;
+          font-size: 18px;
+          color: #1f2937;
+        }
+        .guideme-save-modal-content p {
+          margin: 0 0 16px 0;
+          font-size: 13px;
+          color: #6b7280;
+        }
+        .guideme-save-name-input {
+          width: 100%;
+          padding: 12px;
+          font-size: 14px;
+          border: 2px solid #e5e7eb;
+          border-radius: 8px;
+          margin-bottom: 16px;
+          box-sizing: border-box;
+          outline: none;
+          transition: border-color 0.2s;
+        }
+        .guideme-save-name-input:focus {
+          border-color: #4F46E5;
+        }
+        .guideme-save-modal-actions {
+          display: flex;
+          gap: 12px;
+        }
+        .guideme-save-cancel-btn, .guideme-save-confirm-btn {
+          flex: 1;
+          padding: 10px 16px;
+          border: none;
+          border-radius: 8px;
+          font-size: 14px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+        .guideme-save-cancel-btn {
+          background: #f3f4f6;
+          color: #4b5563;
+        }
+        .guideme-save-cancel-btn:hover {
+          background: #e5e7eb;
+        }
+        .guideme-save-confirm-btn {
+          background: linear-gradient(135deg, #f59e0b, #d97706);
+          color: white;
+        }
+        .guideme-save-confirm-btn:hover {
+          background: linear-gradient(135deg, #d97706, #b45309);
+        }
+      </style>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Focus the input
+    const input = modal.querySelector('.guideme-save-name-input');
+    input.focus();
+    input.select();
+
+    // Bind events
+    modal.querySelector('.guideme-save-modal-backdrop').addEventListener('click', () => modal.remove());
+    modal.querySelector('.guideme-save-cancel-btn').addEventListener('click', () => modal.remove());
+    modal.querySelector('.guideme-save-confirm-btn').addEventListener('click', () => this.saveGuideFromModal(modal));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this.saveGuideFromModal(modal);
+      if (e.key === 'Escape') modal.remove();
+    });
+  }
+
+  async saveGuideFromModal(modal) {
+    const input = modal.querySelector('.guideme-save-name-input');
+    const name = input.value.trim();
+
+    if (!name) {
+      input.style.borderColor = '#dc2626';
+      return;
+    }
+
+    try {
+      // Send save request to background
+      await chrome.runtime.sendMessage({
+        type: 'SAVE_MACRO',
+        payload: {
+          name: name,
+          task: this.originalTask,
+          steps: this.currentSteps,
+          startUrl: window.location.href
+        }
+      });
+
+      // Remove modal and show success
+      modal.remove();
+      this.showSaveSuccess(name);
+    } catch (error) {
+      console.error('GuideMe: Failed to save guide:', error);
+      input.style.borderColor = '#dc2626';
+    }
+  }
+
+  showSaveSuccess(name) {
+    const toast = document.createElement('div');
+    toast.innerHTML = `
+      <div style="position:fixed;bottom:100px;right:20px;background:#10B981;color:white;padding:16px 24px;border-radius:12px;font-family:system-ui;z-index:2147483647;box-shadow:0 4px 20px rgba(0,0,0,0.3);animation:guideme-toast-in 0.3s ease;">
+        <div style="font-weight:600;">✅ Guide Saved!</div>
+        <div style="font-size:13px;opacity:0.9;margin-top:4px;">"${name}" - Find it in 📚 Saved Guides</div>
+      </div>
+      <style>
+        @keyframes guideme-toast-in {
+          from { opacity:0; transform:translateY(20px); }
+          to { opacity:1; transform:translateY(0); }
+        }
+      </style>
+    `;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3000);
   }
 
   waitForPageReady() {
@@ -231,6 +634,9 @@ class GuideMeContent {
 
   async saveGuideState() {
     try {
+      // Calculate remaining steps for cross-page continuation
+      const remainingSteps = this.currentSteps.slice(this.currentStepIndex + 1);
+      
       await chrome.storage.local.set({
         activeGuide: {
           task: this.originalTask,
@@ -239,10 +645,15 @@ class GuideMeContent {
           highlightColor: this.highlightColor,
           completedSteps: this.completedSteps || [],
           pageUrl: window.location.href,
-          savedAt: Date.now()
+          savedAt: Date.now(),
+          // Include remaining steps and flags for cross-page continuation
+          remainingSteps: remainingSteps,
+          isSavedGuideReplay: this.isSavedGuideReplay || false,
+          allStepsForSaving: this.allStepsForSaving || [],
+          visitedUrls: this.visitedUrls || []
         }
       });
-      console.log('GuideMe: Guide state saved for URL:', window.location.href);
+      console.log('GuideMe: Guide state saved, remaining steps:', remainingSteps.length);
     } catch (error) {
       console.error('GuideMe: Failed to save guide state', error);
     }
@@ -250,8 +661,17 @@ class GuideMeContent {
 
   async clearGuideState() {
     try {
+      // Set completed flag BEFORE removing, in case of race conditions
+      await chrome.storage.local.set({ 
+        activeGuide: { completed: true, clearedAt: Date.now() } 
+      });
+      // Then remove completely
       await chrome.storage.local.remove(['activeGuide']);
-      console.log('GuideMe: Guide state cleared');
+      // Also clear localStorage backup
+      try {
+        localStorage.removeItem('guideme_backup');
+      } catch (e) {}
+      console.log('GuideMe: Guide state cleared completely');
     } catch (error) {
       console.error('GuideMe: Failed to clear guide state', error);
     }
@@ -268,6 +688,21 @@ class GuideMeContent {
         this.highlightColor = message.payload.highlightColor || '#4F46E5';
         this.currentStepIndex = 0;
         this.originalTask = message.payload.task || '';
+        this.isSavedGuideReplay = message.payload.isMacro || message.payload.isSavedGuide || false;
+        
+        // Store all steps for auto-save (deep copy at start)
+        // This captures the INITIAL steps before any mutations
+        this.allStepsForSaving = JSON.parse(JSON.stringify(this.currentSteps));
+        console.log('GuideMe: Starting guide with', this.currentSteps.length, 'steps');
+        console.log('GuideMe: Is saved guide replay:', this.isSavedGuideReplay);
+        console.log('GuideMe: Steps descriptions:', this.currentSteps.map(s => s.description?.substring(0, 30)));
+        
+        // For saved guide replays, we need to re-scan DOM first!
+        if (this.isSavedGuideReplay) {
+          console.log('GuideMe: Replaying saved guide - re-scanning DOM first');
+          this.extractDOM(); // This assigns fresh gm-X IDs
+        }
+        
         this.startGuide();
         this.saveGuideState(); // Save state for cross-page navigation
         sendResponse({ success: true });
@@ -286,14 +721,277 @@ class GuideMeContent {
         this.stopGuide();
         sendResponse({ success: true });
         break;
+
+      case 'START_VOICE_RECOGNITION':
+        // Voice recognition now handled by offscreen document
+        // Just show the voice overlay for visual feedback
+        this.showVoiceOverlay();
+        sendResponse({ success: true });
+        break;
+
+      case 'STOP_VOICE_RECOGNITION':
+        // Hide the voice overlay
+        this.hideVoiceOverlay();
+        sendResponse({ success: true });
+        break;
+      
+      case 'VOICE_RESULT':
+        // Update voice overlay with transcript from offscreen document
+        if (message.transcript) {
+          this.updateVoiceOverlay(message.transcript, message.isFinal);
+        }
+        if (message.isFinal) {
+          setTimeout(() => this.hideVoiceOverlay(), 500);
+        }
+        sendResponse({ success: true });
+        break;
+        
+      case 'VOICE_ERROR':
+        // Voice error from offscreen document
+        this.hideVoiceOverlay();
+        sendResponse({ success: true });
+        break;
+        
+      case 'VOICE_ENDED':
+        // Voice recognition ended
+        this.hideVoiceOverlay();
+        sendResponse({ success: true });
+        break;
+      
+      case 'GET_CURRENT_GUIDE_DATA':
+        // Return current guide data for saving
+        sendResponse({
+          task: this.originalTask,
+          steps: this.currentSteps,
+          currentStepIndex: this.currentStepIndex,
+          url: window.location.href
+        });
+        break;
       
       default:
         sendResponse({ error: 'Unknown message type' });
     }
   }
 
+  // ============ VOICE OVERLAY UI (voice recognition runs in offscreen document) ============
+  // Voice recognition has been moved to offscreen document for proper microphone access
+  // These methods just handle the visual overlay in the content page
+  
+  showVoiceOverlay() {
+    // Remove existing overlay
+    this.hideVoiceOverlay();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'guideme-voice-overlay';
+    overlay.innerHTML = `
+      <div class="guideme-voice-modal">
+        <div class="guideme-voice-animation">
+          <div class="guideme-voice-circle"></div>
+          <div class="guideme-voice-circle"></div>
+          <div class="guideme-voice-circle"></div>
+          <div class="guideme-voice-mic">🎤</div>
+        </div>
+        <div class="guideme-voice-text">Listening...</div>
+        <div class="guideme-voice-transcript"></div>
+        <button class="guideme-voice-cancel">Cancel</button>
+      </div>
+    `;
+
+    // Add styles
+    const style = document.createElement('style');
+    style.id = 'guideme-voice-styles';
+    style.textContent = `
+      #guideme-voice-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.7);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2147483647;
+        animation: guideme-fade-in 0.2s ease;
+      }
+
+      @keyframes guideme-fade-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      .guideme-voice-modal {
+        background: white;
+        border-radius: 20px;
+        padding: 40px;
+        text-align: center;
+        min-width: 300px;
+        max-width: 400px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      }
+
+      .guideme-voice-animation {
+        position: relative;
+        width: 120px;
+        height: 120px;
+        margin: 0 auto 24px;
+      }
+
+      .guideme-voice-mic {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 40px;
+        z-index: 10;
+      }
+
+      .guideme-voice-circle {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        border-radius: 50%;
+        border: 3px solid #4F46E5;
+        animation: guideme-pulse-ring 1.5s ease-out infinite;
+      }
+
+      .guideme-voice-circle:nth-child(1) {
+        width: 60px;
+        height: 60px;
+        animation-delay: 0s;
+      }
+
+      .guideme-voice-circle:nth-child(2) {
+        width: 80px;
+        height: 80px;
+        animation-delay: 0.3s;
+      }
+
+      .guideme-voice-circle:nth-child(3) {
+        width: 100px;
+        height: 100px;
+        animation-delay: 0.6s;
+      }
+
+      @keyframes guideme-pulse-ring {
+        0% {
+          transform: translate(-50%, -50%) scale(0.8);
+          opacity: 1;
+          border-width: 3px;
+        }
+        100% {
+          transform: translate(-50%, -50%) scale(1.4);
+          opacity: 0;
+          border-width: 1px;
+        }
+      }
+
+      /* Sound wave animation when speaking */
+      .guideme-voice-modal.speaking .guideme-voice-circle {
+        animation: guideme-sound-wave 0.5s ease-in-out infinite alternate;
+      }
+
+      .guideme-voice-modal.speaking .guideme-voice-circle:nth-child(1) {
+        animation-delay: 0s;
+      }
+      .guideme-voice-modal.speaking .guideme-voice-circle:nth-child(2) {
+        animation-delay: 0.1s;
+      }
+      .guideme-voice-modal.speaking .guideme-voice-circle:nth-child(3) {
+        animation-delay: 0.2s;
+      }
+
+      @keyframes guideme-sound-wave {
+        0% {
+          transform: translate(-50%, -50%) scale(0.9);
+          border-color: #4F46E5;
+        }
+        100% {
+          transform: translate(-50%, -50%) scale(1.1);
+          border-color: #7C3AED;
+        }
+      }
+
+      .guideme-voice-text {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 20px;
+        font-weight: 600;
+        color: #1f2937;
+        margin-bottom: 12px;
+      }
+
+      .guideme-voice-transcript {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 16px;
+        color: #4F46E5;
+        min-height: 24px;
+        margin-bottom: 20px;
+        padding: 0 20px;
+        word-wrap: break-word;
+      }
+
+      .guideme-voice-cancel {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        padding: 10px 24px;
+        background: #f3f4f6;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        color: #6b7280;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+
+      .guideme-voice-cancel:hover {
+        background: #e5e7eb;
+      }
+    `;
+
+    document.head.appendChild(style);
+    document.body.appendChild(overlay);
+
+    // Bind cancel button
+    overlay.querySelector('.guideme-voice-cancel').addEventListener('click', () => {
+      this.stopVoiceRecognition();
+      chrome.runtime.sendMessage({ type: 'VOICE_ERROR', error: 'cancelled' });
+    });
+  }
+
+  updateVoiceOverlay(transcript, isFinal) {
+    const overlay = document.getElementById('guideme-voice-overlay');
+    if (!overlay) return;
+
+    const modal = overlay.querySelector('.guideme-voice-modal');
+    const textEl = overlay.querySelector('.guideme-voice-text');
+    const transcriptEl = overlay.querySelector('.guideme-voice-transcript');
+
+    // Add speaking animation when there's activity
+    if (transcript) {
+      modal.classList.add('speaking');
+      transcriptEl.textContent = `"${transcript}"`;
+    }
+
+    if (isFinal) {
+      modal.classList.remove('speaking');
+      textEl.textContent = '✓ Got it!';
+      textEl.style.color = '#10b981';
+    }
+  }
+
+  hideVoiceOverlay() {
+    const overlay = document.getElementById('guideme-voice-overlay');
+    const style = document.getElementById('guideme-voice-styles');
+    if (overlay) overlay.remove();
+    if (style) style.remove();
+  }
+
   startGuide() {
     this.isGuideActive = true;
+    // Reset counters for fresh guide (but not if continuing)
+    if (this.totalStepsCompleted === 0) {
+      this.isMultiPageTask = false;
+    }
     this.createControlPanel();
     this.highlightStep(this.currentStepIndex);
     this.setupEventListeners();
@@ -312,6 +1010,11 @@ class GuideMeContent {
     this.currentSteps = [];
     this.currentStepIndex = 0;
     this.completedSteps = [];
+    this.totalStepsCompleted = 0; // Reset counter
+    this.isMultiPageTask = false; // Reset flag
+    this.isSavedGuideReplay = false; // Reset replay flag
+    this.allStepsForSaving = []; // Clear saved steps
+    this.visitedUrls = []; // Clear visited URLs
     this.originalTask = '';
     
     // Clear ALL saved state to prevent unwanted resumption
@@ -320,7 +1023,32 @@ class GuideMeContent {
       localStorage.removeItem('guideme_backup');
     } catch (e) {}
     
+    // Note: We keep SPA detection active as it's needed for new guides
     console.log('GuideMe: Guide stopped and all state cleared');
+  }
+
+  cleanupSPADetection() {
+    // Restore original history methods
+    if (this.originalPushState) {
+      history.pushState = this.originalPushState;
+      this.originalPushState = null;
+    }
+    if (this.originalReplaceState) {
+      history.replaceState = this.originalReplaceState;
+      this.originalReplaceState = null;
+    }
+    
+    // Remove popstate listener
+    if (this.popstateHandler) {
+      window.removeEventListener('popstate', this.popstateHandler);
+      this.popstateHandler = null;
+    }
+    
+    // Clear URL polling interval
+    if (this.urlCheckInterval) {
+      clearInterval(this.urlCheckInterval);
+      this.urlCheckInterval = null;
+    }
   }
 
   setupEventListeners() {
@@ -362,24 +1090,37 @@ class GuideMeContent {
 
     // Detect clicks on highlighted element to auto-advance
     this.clickHandler = (e) => {
-      if (!this.isGuideActive || !this.currentHighlightedElement) return;
+      if (!this.isGuideActive) return;
+      
+      // CRITICAL: Only advance if we have a highlighted element AND user clicked on it
+      if (!this.currentHighlightedElement) {
+        console.log('GuideMe: Click detected but no highlighted element - ignoring');
+        return;
+      }
       
       // Check if clicked element is or contains the highlighted element
-      if (this.currentHighlightedElement.contains(e.target) || 
-          e.target === this.currentHighlightedElement ||
-          this.currentHighlightedElement.contains(e.target.parentElement)) {
-        
-        // IMMEDIATELY save state before navigation might occur
-        this.trackStepCompletion();
-        this.saveStateForNavigation();
-        
-        // Auto-advance to next step after a short delay (if no navigation)
-        setTimeout(() => {
-          if (this.isGuideActive) {
-            this.nextStep();
-          }
-        }, 600);
+      const clickedOnHighlighted = 
+        this.currentHighlightedElement.contains(e.target) || 
+        e.target === this.currentHighlightedElement ||
+        this.currentHighlightedElement.contains(e.target.parentElement);
+      
+      if (!clickedOnHighlighted) {
+        console.log('GuideMe: Click was not on highlighted element - ignoring');
+        return;
       }
+      
+      console.log('GuideMe: User clicked highlighted element, advancing...');
+      
+      // IMMEDIATELY save state before navigation might occur
+      this.trackStepCompletion();
+      this.saveStateForNavigation();
+        
+      // Auto-advance to next step after a short delay (if no navigation)
+      setTimeout(() => {
+        if (this.isGuideActive) {
+          this.nextStep();
+        }
+      }, 600);
     };
     document.addEventListener('click', this.clickHandler, true);
 
@@ -455,7 +1196,10 @@ class GuideMeContent {
     panel.innerHTML = `
       <div class="guideme-panel-header">
         <span class="guideme-logo">🎯 GuideMe</span>
-        <button class="guideme-close-btn" title="Close guide">✕</button>
+        <div class="guideme-header-actions">
+          <button class="guideme-save-btn" title="Save this guide for later">💾</button>
+          <button class="guideme-close-btn" title="Close guide">✕</button>
+        </div>
       </div>
       <div class="guideme-panel-content">
         <div class="guideme-step-info">
@@ -473,6 +1217,7 @@ class GuideMeContent {
       <div class="guideme-progress-bar">
         <div class="guideme-progress-fill"></div>
       </div>
+      <button class="guideme-exit-btn">🚪 Exit Tutorial</button>
     `;
 
     document.body.appendChild(panel);
@@ -483,6 +1228,12 @@ class GuideMeContent {
     panel.querySelector('.guideme-prev-btn').addEventListener('click', () => this.prevStep());
     panel.querySelector('.guideme-next-btn').addEventListener('click', () => this.nextStep());
     panel.querySelector('.guideme-refresh-btn').addEventListener('click', () => this.refreshAndReHighlight());
+    panel.querySelector('.guideme-save-btn').addEventListener('click', () => this.showSaveGuideModal());
+    panel.querySelector('.guideme-exit-btn').addEventListener('click', () => {
+      if (confirm('Exit tutorial? Your progress will be lost.')) {
+        this.stopGuide();
+      }
+    });
 
     // Make panel draggable
     this.makeDraggable(panel);
@@ -579,11 +1330,21 @@ class GuideMeContent {
     if (!this.controlPanel || !this.currentSteps.length) return;
 
     const step = this.currentSteps[this.currentStepIndex];
-    const stepNum = this.currentStepIndex + 1;
-    const totalSteps = this.currentSteps.length;
+    const pageStepNum = this.currentStepIndex + 1;
+    const pageTotal = this.currentSteps.length;
+    const overallStep = this.totalStepsCompleted + pageStepNum;
+    
+    console.log('GuideMe: updateControlPanel - step', pageStepNum, 'of', pageTotal);
+    console.log('GuideMe: Step description:', step.description?.substring(0, 50));
 
-    this.controlPanel.querySelector('.guideme-step-number').textContent = 
-      `Step ${stepNum} of ${totalSteps}`;
+    // Show overall journey step number (not "X of Y" since we don't know total)
+    const stepNumberEl = this.controlPanel.querySelector('.guideme-step-number');
+    if (this.isMultiPageTask || this.totalStepsCompleted > 0) {
+      stepNumberEl.textContent = `Step ${overallStep} • Multi-page`;
+    } else {
+      stepNumberEl.textContent = `Step ${pageStepNum} of ${pageTotal}`;
+    }
+    
     this.controlPanel.querySelector('.guideme-instruction').textContent = 
       step.description || step.instruction || 'Follow this step';
     
@@ -595,16 +1356,23 @@ class GuideMeContent {
       hintEl.style.display = 'none';
     }
 
-    // Update buttons
+    // Update buttons - always show "Next" since we might have more pages
     const prevBtn = this.controlPanel.querySelector('.guideme-prev-btn');
     const nextBtn = this.controlPanel.querySelector('.guideme-next-btn');
     
-    prevBtn.disabled = this.currentStepIndex === 0;
-    nextBtn.textContent = this.currentStepIndex === totalSteps - 1 ? 'Done ✓' : 'Next →';
+    prevBtn.disabled = this.currentStepIndex === 0 && this.totalStepsCompleted === 0;
+    // Always show "Next →" - we'll check for completion after clicking
+    nextBtn.textContent = 'Next →';
 
-    // Update progress bar
-    const progress = (stepNum / totalSteps) * 100;
-    this.controlPanel.querySelector('.guideme-progress-fill').style.width = `${progress}%`;
+    // Update progress bar (pulse if multi-page to show ongoing)
+    const progressBar = this.controlPanel.querySelector('.guideme-progress-fill');
+    const progress = (pageStepNum / pageTotal) * 100;
+    progressBar.style.width = `${progress}%`;
+    if (this.isMultiPageTask) {
+      progressBar.style.animation = 'guideme-pulse 2s ease-in-out infinite';
+    } else {
+      progressBar.style.animation = 'none';
+    }
   }
 
   removeControlPanel() {
@@ -625,14 +1393,27 @@ class GuideMeContent {
   }
 
   nextStep() {
-    // Track the completed step
+    // For live guides (not replay), track the completed step
+    // Note: trackStepCompletion() is called by click handler, so don't duplicate here
     const completedStep = this.currentSteps[this.currentStepIndex];
+    
+    // Only increment counter (tracking already done by click handler for live clicks)
     if (completedStep) {
-      this.completedSteps.push({
-        description: completedStep.description || '',
-        action: completedStep.action || 'click',
-        completedAt: Date.now()
-      });
+      this.totalStepsCompleted++;
+      
+      // Add to allStepsForSaving if not already there
+      if (!this.isSavedGuideReplay && this.allStepsForSaving) {
+        const alreadyExists = this.allStepsForSaving.some(
+          s => s.description === completedStep.description
+        );
+        if (!alreadyExists) {
+          this.allStepsForSaving.push({
+            description: completedStep.description,
+            action: completedStep.action || 'click',
+            element: completedStep.element || 'body'
+          });
+        }
+      }
     }
     
     if (this.currentStepIndex < this.currentSteps.length - 1) {
@@ -645,11 +1426,210 @@ class GuideMeContent {
         this.saveGuideState(); // Save progress
       }, 300);
     } else {
-      // All steps on this page complete
-      // Save state so if navigation happens, we continue on next page
-      this.saveGuideState();
-      this.showCompletionMessage();
-      setTimeout(() => this.stopGuide(), 2000);
+      // All steps on THIS PAGE complete
+      // For saved guide replays, just show completion (no AI continuation)
+      if (this.isSavedGuideReplay) {
+        console.log('GuideMe: Saved guide replay complete');
+        this.showFinalCompletion();
+      } else {
+        // Live guide - request continuation from AI
+        console.log('GuideMe: All steps on this page done, requesting continuation...');
+        this.saveGuideState();
+        this.requestContinuation();
+      }
+    }
+  }
+
+  async requestContinuation() {
+    // Mark this as a multi-page task since we're continuing
+    this.isMultiPageTask = true;
+    
+    // Ensure control panel exists
+    if (!this.controlPanel || !document.body.contains(this.controlPanel)) {
+      console.log('GuideMe: Recreating control panel...');
+      this.createControlPanel();
+    }
+    
+    // Show loading state
+    if (this.controlPanel) {
+      this.controlPanel.querySelector('.guideme-instruction').textContent = '⏳ Finding next steps...';
+      this.controlPanel.querySelector('.guideme-hint').textContent = '🔄 This is a multi-page task';
+      this.controlPanel.querySelector('.guideme-hint').style.display = 'block';
+      this.controlPanel.querySelector('.guideme-step-number').textContent = `Step ${this.totalStepsCompleted + 1} • Loading...`;
+    }
+
+    try {
+      // Wait for any DOM updates after the click (menus opening, page loading)
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Re-extract DOM with fresh element IDs
+      const dom = this.extractDOM();
+      
+      const response = await chrome.runtime.sendMessage({
+        type: 'CONTINUE_GUIDE',
+        payload: {
+          task: this.originalTask,
+          completedSteps: this.completedSteps,
+          dom: dom,
+          url: window.location.href,
+          title: document.title
+        }
+      });
+
+      console.log('GuideMe: Continuation response:', response);
+
+      if (response.error) {
+        console.error('GuideMe: Continuation error:', response.error);
+        this.showCompletionMessage();
+        setTimeout(() => this.stopGuide(), 2000);
+        return;
+      }
+
+      // Check if AI says we're truly done
+      if (response.completed === true) {
+        console.log('GuideMe: Task marked as completed by AI');
+        this.showFinalCompletion();
+        return;
+      }
+
+      // More steps available!
+      if (response.steps && response.steps.length > 0) {
+        console.log('GuideMe: Got', response.steps.length, 'more steps');
+        this.currentSteps = response.steps;
+        this.currentStepIndex = 0;
+        
+        // Add new steps to allStepsForSaving for auto-save
+        if (this.allStepsForSaving) {
+          response.steps.forEach(step => {
+            // Avoid duplicates by checking descriptions
+            const exists = this.allStepsForSaving.some(
+              s => s.description === step.description
+            );
+            if (!exists) {
+              this.allStepsForSaving.push({
+                description: step.description,
+                action: step.action || 'click',
+                element: step.element || 'body'
+              });
+            }
+          });
+          console.log('GuideMe: Total steps for saving:', this.allStepsForSaving.length);
+        }
+        
+        // Ensure panel exists before updating
+        if (!this.controlPanel || !document.body.contains(this.controlPanel)) {
+          this.createControlPanel();
+        }
+        
+        // Update UI
+        this.highlightStep(0);
+        this.updateControlPanel();
+        this.saveGuideState();
+        
+        // Show progress if available
+        if (response.progress && this.controlPanel) {
+          const hint = this.controlPanel.querySelector('.guideme-hint');
+          hint.textContent = `📍 ${response.progress}`;
+          hint.style.display = 'block';
+        }
+      } else {
+        // No more steps and not marked complete - task might be done
+        console.log('GuideMe: No more steps available, assuming complete');
+        this.showFinalCompletion();
+      }
+    } catch (error) {
+      console.error('GuideMe: Continuation failed:', error);
+      // Show error with retry option instead of just stopping
+      this.showRetryOption(error.message || 'Connection failed');
+    }
+  }
+
+  showRetryOption(errorMessage) {
+    if (this.controlPanel) {
+      this.controlPanel.querySelector('.guideme-step-number').textContent = '⚠️ Paused';
+      this.controlPanel.querySelector('.guideme-instruction').textContent = 
+        errorMessage.includes('rate') ? 'API rate limited - wait a moment' : 'Failed to get next steps';
+      this.controlPanel.querySelector('.guideme-hint').textContent = 'Click 🔄 to retry';
+      this.controlPanel.querySelector('.guideme-hint').style.display = 'block';
+      
+      // Make the refresh button pulse to draw attention
+      const refreshBtn = this.controlPanel.querySelector('.guideme-refresh-btn');
+      if (refreshBtn) {
+        refreshBtn.style.animation = 'guideme-pulse 1s ease-in-out infinite';
+        refreshBtn.title = 'Click to retry';
+      }
+    }
+  }
+
+  async showFinalCompletion() {
+    // IMMEDIATELY clear all saved state to prevent re-activation on back navigation
+    this.isGuideActive = false;
+    await this.clearGuideState();
+    try {
+      localStorage.removeItem('guideme_backup');
+    } catch (e) {}
+    console.log('GuideMe: Guide completed - all state cleared immediately');
+    
+    // Auto-save the guide if enabled
+    await this.autoSaveGuideIfEnabled();
+    
+    // Show success with stats
+    const totalSteps = this.totalStepsCompleted + this.currentStepIndex + 1;
+    if (this.controlPanel) {
+      this.controlPanel.querySelector('.guideme-step-number').textContent = '✅ Complete!';
+      this.controlPanel.querySelector('.guideme-instruction').textContent = '🎉 You made it!';
+      this.controlPanel.querySelector('.guideme-hint').textContent = `Completed ${totalSteps} steps • Auto-saved ✓`;
+      this.controlPanel.querySelector('.guideme-hint').style.display = 'block';
+      this.controlPanel.querySelector('.guideme-progress-fill').style.width = '100%';
+      this.controlPanel.querySelector('.guideme-progress-fill').style.animation = 'none';
+      this.controlPanel.querySelector('.guideme-progress-fill').style.background = '#10B981';
+    }
+    this.clearHighlights();
+    setTimeout(() => this.stopGuide(), 3000);
+  }
+
+  async autoSaveGuideIfEnabled() {
+    try {
+      // Check if auto-save is enabled
+      const result = await chrome.storage.local.get(['autoSaveGuides']);
+      const autoSaveEnabled = result.autoSaveGuides !== false; // Default true
+      
+      if (!autoSaveEnabled) {
+        console.log('GuideMe: Auto-save disabled, skipping...');
+        return;
+      }
+      
+      // Don't auto-save if this was already a saved guide replay
+      if (this.isSavedGuideReplay) {
+        console.log('GuideMe: Skipping auto-save for replayed guide');
+        return;
+      }
+      
+      // Use allStepsForSaving which has the complete journey
+      const stepsToSave = this.allStepsForSaving || [];
+      
+      if (stepsToSave.length === 0) {
+        console.log('GuideMe: No steps to save');
+        return;
+      }
+      
+      // Generate a name from the task
+      const guideName = this.originalTask.substring(0, 50) + (this.originalTask.length > 50 ? '...' : '');
+      
+      // Save via background script
+      await chrome.runtime.sendMessage({
+        type: 'SAVE_MACRO',
+        payload: {
+          name: guideName,
+          task: this.originalTask,
+          steps: stepsToSave,
+          startUrl: window.location.href
+        }
+      });
+      
+      console.log('GuideMe: Guide auto-saved with', stepsToSave.length, 'steps');
+    } catch (error) {
+      console.error('GuideMe: Auto-save failed:', error);
     }
   }
 
@@ -1041,8 +2021,9 @@ class GuideMeContent {
   findElement(selector, text) {
     console.log('GuideMe: ========== FINDING ELEMENT ==========');
     console.log('GuideMe: Element ID/selector:', selector);
+    console.log('GuideMe: Description:', text?.substring(0, 60));
     
-    // STRATEGY 1: Find by GuideMe ID (most reliable!)
+    // STRATEGY 1: Find by GuideMe ID (most reliable for live guides)
     // The selector should be the element ID like "gm-15"
     if (selector && selector.startsWith('gm-')) {
       const el = document.querySelector(`[data-guideme-id="${selector}"]`);
@@ -1053,8 +2034,9 @@ class GuideMeContent {
       console.log('GuideMe: ID not found or not visible:', selector);
     }
     
+    // For saved guide replays, IDs won't match - use text matching primarily
     // STRATEGY 2: If selector looks like exact text, find by exact text match
-    if (selector && selector.length > 2 && !selector.startsWith('.') && !selector.startsWith('#')) {
+    if (selector && selector.length > 2 && !selector.startsWith('.') && !selector.startsWith('#') && !selector.startsWith('gm-')) {
       const exactMatch = this.findByExactText(selector);
       if (exactMatch) {
         console.log('GuideMe: ✓ Found by exact text:', selector);
@@ -1074,6 +2056,7 @@ class GuideMeContent {
     }
     
     // STRATEGY 4: Extract keywords from description and find best match
+    // This is the fallback for saved guides where IDs changed
     const description = text || '';
     const keywords = this.extractKeywords(selector + ' ' + description);
     console.log('GuideMe: Keywords:', keywords);
@@ -1538,9 +2521,35 @@ style.textContent = `
     cursor: grab;
   }
 
+  .guideme-header-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
   .guideme-logo {
     font-weight: 700;
     font-size: 14px;
+  }
+
+  .guideme-save-btn {
+    background: rgba(255,255,255,0.2);
+    border: none;
+    color: white;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+  }
+
+  .guideme-save-btn:hover {
+    background: rgba(245, 158, 11, 0.9);
+    transform: scale(1.1);
   }
 
   .guideme-close-btn {
@@ -1648,6 +2657,30 @@ style.textContent = `
     height: 100%;
     background: linear-gradient(90deg, #4F46E5, #7C3AED);
     transition: width 0.3s ease;
+  }
+
+  .guideme-exit-btn {
+    width: calc(100% - 32px);
+    margin: 0 16px 16px;
+    padding: 10px 16px;
+    background: transparent;
+    border: 1px solid #dc2626;
+    border-radius: 8px;
+    color: #dc2626;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .guideme-exit-btn:hover {
+    background: #dc2626;
+    color: white;
+  }
+
+  @keyframes guideme-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
   }
 `;
 document.head.appendChild(style);

@@ -33,7 +33,9 @@ Ask a question like *"How do I change my profile picture?"* and GuideMe will:
 - 🧠 **AI-Powered** - Uses Gemini (free!), OpenAI, or Claude to understand any website
 - 🎯 **Precise Highlighting** - Points to exact elements with visual overlays
 - 📄 **Multi-Page Flows** - Automatically continues guidance across page navigations
-- 🔄 **Dynamic Content** - Refresh button to re-scan after opening dropdowns/menus
+- 🔄 **SPA Support** - Works on YouTube, Gmail, Twitter and other Single Page Apps
+- 🎤 **Voice Commands** - Click the mic and speak your question (accessibility!)
+- 💾 **Macro Recording** - Save successful guides and replay without AI
 - 🆓 **Free to Use** - Works with Google Gemini's free API tier
 - 🔒 **Privacy First** - All processing happens locally, your API key stays in your browser
 - 🌐 **Universal** - Works on any website
@@ -70,13 +72,29 @@ Ask a question like *"How do I change my profile picture?"* and GuideMe will:
 
 ## 🚀 Usage
 
+### Basic Usage
 1. **Click the GuideMe icon** in your browser toolbar
 2. **Type your question** in natural language:
    - *"How do I change my password?"*
    - *"Where are the notification settings?"*
-   - *"How to create a new repository?"*
+   - *"How to upload a video?"*
 3. **Click "Guide Me"** and follow the highlighted elements
 4. **Click the highlighted element** to auto-advance to the next step
+
+### 🎤 Voice Commands
+1. Click the **microphone button** 🎤 next to the text input
+2. **Speak your question** naturally
+3. GuideMe will transcribe and automatically start guiding!
+
+*Perfect for accessibility or when your hands are busy.*
+
+### 💾 Macros (Save & Replay)
+1. Complete a guide successfully
+2. Click the **💾 Save** button in the guide header
+3. Give your macro a name (e.g., "Upload YouTube Video")
+4. Next time, find it in **Saved Macros** and click to replay!
+
+*Macros replay instantly without using AI - great for repetitive tasks!*
 
 ### Tips
 
