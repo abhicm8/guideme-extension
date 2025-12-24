@@ -137,90 +137,170 @@ class GuideMePopup {
     this.startVoiceRecognition();
   }
 
-  startVoiceRecognition() {
+  async startVoiceRecognition() {
+    console.log('Starting voice recognition...');
+    
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-      this.showStatus('🎤 Speech recognition not supported in this browser.', 'error');
+      console.error('SpeechRecognition API not available');
+      // Check if Opera
+      const isOpera = navigator.userAgent.includes('OPR') || navigator.userAgent.includes('Opera');
+      if (isOpera) {
+        this.showStatus('🎤 Voice not supported in Opera. Please use Chrome or Edge.', 'error');
+      } else {
+        this.showStatus('🎤 Voice not supported in this browser. Try Chrome or Edge.', 'error');
+      }
       return;
     }
 
     // Show listening UI
     this.voiceBtn.classList.add('listening');
     this.voiceStatus.classList.remove('hidden');
-    this.isListening = true;
     this.taskInput.value = '';
-    this.taskInput.placeholder = 'Listening...';
+    this.taskInput.placeholder = 'Requesting mic access...';
 
-    this.recognition = new SpeechRecognition();
-    this.recognition.lang = 'en-US';
-    this.recognition.continuous = false;
-    this.recognition.interimResults = true;
-    this.recognition.maxAlternatives = 1;
-
-    this.recognition.onstart = () => {
-      console.log('Voice recognition started');
-    };
-
-    this.recognition.onresult = (event) => {
-      let transcript = '';
-      let isFinal = false;
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        transcript = event.results[i][0].transcript;
-        isFinal = event.results[i].isFinal;
-      }
-
-      this.taskInput.value = transcript;
-
-      if (isFinal) {
-        this.stopVoiceUI();
-        // Auto-start guide after final transcript
-        if (transcript.trim()) {
-          setTimeout(() => this.startGuide(), 300);
-        }
-      }
-    };
-
-    this.recognition.onerror = (event) => {
-      console.error('Voice recognition error:', event.error);
+    // STEP 1: Request microphone permission explicitly
+    try {
+      console.log('Requesting microphone permission...');
+      this.audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log('✅ Microphone permission GRANTED');
+    } catch (micError) {
+      console.error('❌ Microphone permission denied:', micError.name, micError.message);
       this.stopVoiceUI();
       
-      if (event.error === 'not-allowed') {
-        this.showStatus('🎤 Microphone blocked. Click the mic icon in address bar to allow.', 'error');
-      } else if (event.error === 'no-speech') {
-        this.showStatus('🎤 No speech detected. Try again.', 'error');
-      } else if (event.error === 'network') {
-        this.showStatus('🎤 Network error. Check your connection.', 'error');
+      if (micError.name === 'NotAllowedError') {
+        this.showStatus('🎤 Mic blocked. Click 🔒 in address bar → Allow microphone.', 'error');
+      } else if (micError.name === 'NotFoundError') {
+        this.showStatus('🎤 No microphone found. Please connect one.', 'error');
       } else {
-        this.showStatus('🎤 Voice error: ' + event.error, 'error');
+        this.showStatus('🎤 Mic error: ' + micError.message, 'error');
       }
-    };
+      return;
+    }
 
-    this.recognition.onend = () => {
-      console.log('Voice recognition ended');
-      this.stopVoiceUI();
-    };
+    // STEP 2: Now start speech recognition
+    this.taskInput.placeholder = 'Listening... speak now!';
+    this.isListening = true;
 
     try {
+      // Small delay to ensure mic is ready
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      this.recognition = new SpeechRecognition();
+      this.recognition.lang = 'en-US';
+      this.recognition.continuous = true;  // Keep listening
+      this.recognition.interimResults = true;
+      this.recognition.maxAlternatives = 1;
+
+      this.recognition.onstart = () => {
+        console.log('✅ Voice recognition STARTED - speak now!');
+      };
+
+      this.recognition.onaudiostart = () => {
+        console.log('✅ Audio capturing started');
+      };
+
+      this.recognition.onspeechstart = () => {
+        console.log('✅ Speech detected');
+      };
+
+      this.recognition.onresult = (event) => {
+        let transcript = '';
+        let isFinal = false;
+
+        // Get the latest result
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            isFinal = true;
+          }
+        }
+
+        console.log(`Transcript: "${transcript}", Final: ${isFinal}`);
+        this.taskInput.value = transcript;
+
+        if (isFinal && transcript.trim()) {
+          console.log('Final transcript received:', transcript);
+          // Just stop listening - don't auto-start guide
+          // User can review and click "Guide Me" button manually
+          this.stopVoice();
+          this.showStatus('✅ Got it! Click "Guide Me" to start.', 'success');
+        }
+      };
+
+      this.recognition.onerror = (event) => {
+        console.error('❌ Voice recognition error:', event.error);
+        
+        // Don't show error for 'aborted' (user stopped) or 'no-speech' (normal timeout)
+        if (event.error === 'aborted') {
+          console.log('Recognition aborted (this is normal when stopping)');
+          return;
+        }
+        
+        this.stopVoice();
+        
+        if (event.error === 'not-allowed') {
+          this.showStatus('🎤 Mic blocked. Click 🔒 in address bar → Allow microphone.', 'error');
+        } else if (event.error === 'no-speech') {
+          this.showStatus('🎤 No speech heard. Click mic and try again.', 'error');
+        } else if (event.error === 'network') {
+          this.showStatus('🎤 Network error. Check your internet connection.', 'error');
+        } else if (event.error === 'audio-capture') {
+          this.showStatus('🎤 Mic not working. Check your microphone.', 'error');
+        } else {
+          this.showStatus('🎤 Error: ' + event.error, 'error');
+        }
+      };
+
+      this.recognition.onend = () => {
+        console.log('Voice recognition ended');
+        // Only restart if still supposed to be listening and no final result yet
+        if (this.isListening && !this.taskInput.value.trim()) {
+          console.log('Restarting recognition (no result yet)...');
+          try {
+            this.recognition.start();
+          } catch (e) {
+            console.log('Could not restart:', e);
+            this.stopVoice();
+          }
+        } else {
+          this.stopVoiceUI();
+        }
+      };
+
+      console.log('Calling recognition.start()...');
       this.recognition.start();
+      console.log('✅ recognition.start() called successfully');
+      
     } catch (error) {
-      console.error('Failed to start voice recognition:', error);
-      this.stopVoiceUI();
-      this.showStatus('🎤 Failed to start voice recognition.', 'error');
+      console.error('❌ Failed to start voice recognition:', error);
+      this.stopVoice();
+      this.showStatus('🎤 Failed to start: ' + error.message, 'error');
     }
   }
 
   stopVoice() {
+    console.log('Stopping voice...');
+    this.isListening = false;
+    
     if (this.recognition) {
-      this.recognition.abort();
+      try {
+        this.recognition.stop();
+      } catch (e) {}
       this.recognition = null;
     }
+    
+    // Stop audio stream
+    if (this.audioStream) {
+      this.audioStream.getTracks().forEach(track => track.stop());
+      this.audioStream = null;
+    }
+    
     this.stopVoiceUI();
   }
 
   stopVoiceUI() {
-    this.isListening = false;
     this.voiceBtn.classList.remove('listening');
     this.voiceStatus.classList.add('hidden');
     this.taskInput.placeholder = 'e.g., How do I create a new project?\ne.g., Where can I change my password?\ne.g., Help me export this as PDF';
