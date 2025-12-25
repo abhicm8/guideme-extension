@@ -352,44 +352,49 @@ If more steps needed, provide maximum 3 steps using element IDs from above.`;
 INPUT: You receive a list of ACTUAL clickable elements with unique IDs (like "gm-5").
 OUTPUT: JSON with steps referencing these exact IDs.
 
+CRITICAL - YOU MUST ALWAYS PROVIDE AT LEAST ONE STEP:
+- Even for simple tasks, provide the first step to get started
+- NEVER return an empty steps array unless the task is literally impossible
+- If user asks "how to X", show them the FIRST element to click toward X
+
+CRITICAL - NEVER GIVE UP OR REDIRECT TO DOCS:
+- NEVER suggest "go to documentation" or "read the help" as a step
+- NEVER tell the user to search externally
+- Your job is to find the ACTUAL button/link on THIS page
+- If the exact button isn't visible, find the CLOSEST action (dropdown, menu, related button)
+- Think about what button MIGHT lead to the feature (e.g., "Code" button for cloning)
+
+CRITICAL - THINK ABOUT SYNONYMS AND RELATED UI:
+Common UI patterns to remember:
+- "Clone/Download" is often under a "Code" button (GitHub, GitLab)
+- "Settings" might be a gear icon or "..." menu
+- "Create new" might be a "+" button
+- Actions are often hidden in dropdown menus
+- Look for buttons that MIGHT contain the action when expanded
+
 CRITICAL - PROVIDE ALL STEPS FOR THIS PAGE:
 - Include ALL steps that can be completed on the current page
 - If 3 buttons need clicking before navigation, include ALL 3 in one response
 - Only stop at steps that would cause page navigation (links to new pages)
-- This is important to minimize API calls!
-
-CRITICAL - UNDERSTANDING MULTI-PAGE TASKS:
-Most tasks require MULTIPLE pages/screens. Examples:
-- "Go to billing settings" = Click menu → Click Settings → Click Billing (3+ pages!)
-- "Find the Budgets page" = Click profile → Click Settings → Click Billing → Click Budgets (4+ pages!)
-- These are NOT single-step tasks!
 
 YOUR JOB ON THIS PAGE:
 1. Look at all clickable elements available
 2. Find element(s) that move toward the goal
-3. Return steps for THIS page only
-4. Set willNavigate: true if any step causes navigation
-5. NEVER set completed: true unless user is LITERALLY at final destination
+3. If exact match not found, find the NEAREST related element (dropdown, menu)
+4. Return steps for THIS page only
+5. Set willNavigate: true if any step causes navigation
+6. NEVER set completed: true unless user is LITERALLY at final destination
 
 OUTPUT FORMAT:
 {
   "steps": [
-    {"elementId": "gm-5", "action": "click", "description": "In the header, click your profile picture to open the menu"}
+    {"elementId": "gm-5", "action": "click", "description": "Click the 'Code' button to open clone options"}
   ],
   "canComplete": true,
   "completed": false,
-  "willNavigate": true,
-  "navigationHint": "This opens a menu - we'll continue from there"
+  "willNavigate": false,
+  "navigationHint": "This opens a dropdown with clone URLs"
 }
-
-COMPLETED FIELD:
-- completed: false = More steps needed after this (DEFAULT for navigation tasks!)
-- completed: true = ONLY when literally on the FINAL screen (e.g., Billing page is showing)
-
-For "billing settings" on GitHub home page:
-- Step 1: Click profile menu → completed: FALSE (just opening menu)
-- After menu opens, Step 2: Click Settings → completed: FALSE (going to settings)
-- After settings loads, Step 3: Click Billing → completed: TRUE (now on billing!)
 
 RULES:
 1. ONLY use element IDs from the provided list - never invent IDs
@@ -397,14 +402,22 @@ RULES:
 3. Each step = ONE click action
 4. Be specific: say WHERE (header, sidebar) and WHAT text to click
 5. If step causes navigation, only include steps up to that point
-6. DEFAULT to completed: false for any task involving navigation`;
+6. DEFAULT to completed: false for any task involving navigation
+7. NEVER suggest documentation, help pages, or external resources`;
   }
 
   buildUserPrompt(task, url, title, dom) {
-    // Format elements in a clear way for AI
+    // Format elements with rich context for AI
     const elementList = dom.elements
-      .filter(e => e.type !== 'heading') // Filter out headings from clickable elements
-      .map(e => `${e.id}: "${e.text}" [${e.type}] (${e.location})`)
+      .filter(e => e.type !== 'heading')
+      .map(e => {
+        let desc = `${e.id}: "${e.text}" [${e.type}] (${e.location})`;
+        // Add hints if available (dropdown, primary-action, navigation, etc.)
+        if (e.hints) desc += ` {${e.hints}}`;
+        // Add nearby context if available
+        if (e.near) desc += ` near: "${e.near}"`;
+        return desc;
+      })
       .join('\n');
     
     const headings = dom.elements
@@ -421,8 +434,26 @@ USER WANTS TO: "${task}"
 AVAILABLE CLICKABLE ELEMENTS (use these exact IDs):
 ${elementList}
 
-Guide the user by telling them which elements to click. Use ONLY the element IDs listed above.
-Do NOT suggest using search - navigate through the menus and buttons shown.`;
+ELEMENT HINTS EXPLAINED:
+- {dropdown} = Opens a menu/popup with more options
+- {primary-action} = Visually prominent button (colored, stands out)
+- {navigation} = Part of site navigation tabs/menu
+- {form} = Inside a form
+
+CRITICAL SELECTION RULES:
+1. When multiple elements have SAME TEXT, use hints to pick the right one:
+   - For ACTIONS (clone, download, create): prefer {dropdown} or {primary-action} over {navigation}
+   - Navigation tabs are for switching views, NOT for actions
+   - Action buttons are usually in 'main' location, not 'sidebar'
+
+2. Example: "clone repository" - there might be:
+   - "Code" [link] (navigation) {navigation} ← WRONG, this is a nav tab
+   - "Code" [button] (main) {dropdown, primary-action} ← CORRECT, this opens clone options
+
+3. ALWAYS prefer: main > header > sidebar for action tasks
+4. ALWAYS prefer: {primary-action} or {dropdown} over {navigation} for actions
+
+Use ONLY the element IDs listed above.`;
   }
 
   condenseDom(dom) {
@@ -673,6 +704,12 @@ Do NOT suggest using search - navigate through the menus and buttons shown.`;
 
       console.log('GuideMe: Parsed steps:', validatedSteps);
       console.log('GuideMe: completed:', parsed.completed, 'willNavigate:', parsed.willNavigate);
+
+      // CRITICAL: If AI returns 0 steps on initial request, that's an error
+      // (Empty steps on continuation with completed:true is OK)
+      if (validatedSteps.length === 0 && !parsed.completed) {
+        throw new Error('AI returned no steps. Try rephrasing your question or being more specific.');
+      }
 
       return {
         steps: validatedSteps,

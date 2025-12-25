@@ -961,6 +961,17 @@ class GuideMePopup {
       this.currentSteps = response.steps;
       this.currentStepIndex = 0;
 
+      // Check if AI returned empty steps (shouldn't happen after backend fix, but be safe)
+      if (!this.currentSteps || this.currentSteps.length === 0) {
+        // Check if AI marked task as already complete
+        if (response.completed) {
+          this.showStatus('The AI thinks this task is already complete on this page. Try asking differently.', 'error');
+        } else {
+          this.showStatus('Could not generate guide. Try being more specific about what you want to do.', 'error');
+        }
+        return;
+      }
+
       // Send steps to content script for highlighting (include task for cross-page tracking)
       await chrome.tabs.sendMessage(tab.id, {
         type: 'START_GUIDE',

@@ -314,6 +314,53 @@ New software and websites emerge every day. People will always need help navigat
 - AI responses may vary — use refresh if guidance seems incorrect
 - Some complex workflows may need multiple guide sessions
 - **Currently websites only** — desktop apps are a future goal
+- Press **Escape** to quickly stop any guide
+
+---
+
+## 🔒 Privacy & Security
+
+**GuideMe takes privacy seriously.** Here's exactly what happens with your data:
+
+### What We Collect
+
+| Data | Where It Goes | Stored? |
+|------|---------------|---------|
+| **Button/link text** (e.g., "Settings", "Save") | Sent to AI provider | No - discarded after response |
+| **Element types** (button, link, dropdown) | Sent to AI provider | No |
+| **Page title & URL** | Sent to AI provider | No |
+| **Your question** | Sent to AI provider | No |
+
+### What We Do NOT Collect
+
+- ❌ **Form data** (passwords, credit cards, personal info)
+- ❌ **Page content** (articles, emails, messages)
+- ❌ **Cookies or session data**
+- ❌ **Any data sent to us** - we have no servers!
+
+### Where Data Goes
+
+```
+Your Browser → AI Provider (Gemini/OpenAI/Claude) → Your Browser
+                    ↑
+             That's it. No middleman.
+```
+
+- **API Key**: Stored locally in your browser only
+- **Saved Guides**: Stored locally in your browser only  
+- **No analytics, no tracking, no telemetry**
+- **100% open source** - verify the code yourself
+
+### AI Provider Privacy
+
+Your data is subject to the privacy policy of YOUR chosen provider:
+- [Google Gemini Privacy](https://ai.google.dev/terms)
+- [OpenAI Privacy](https://openai.com/policies/privacy-policy)
+- [Anthropic Privacy](https://www.anthropic.com/privacy)
+
+**Tip:** For maximum privacy, use saved guides (Guide Mode) — no AI calls needed!
+
+---
 
 ## ❓ FAQ
 
@@ -331,6 +378,15 @@ New software and websites emerge every day. People will always need help navigat
 
 **Q: How is this different from other AI tools?**
 > Most AI tools give you text instructions. GuideMe actually highlights the elements on screen — visual guidance, not just words.
+
+**Q: Is it safe?**
+Yes. We only extract button/link text (like "Settings", "Code", "Save") and element types. We do NOT read form fields, passwords, page content, or anything sensitive.
+
+**Q: Where does data go?**
+Directly to the AI provider YOU choose (Gemini, OpenAI, or Claude). We have no servers and collect nothing.
+
+**Q: Can someone spy on my browsing?**
+No. The extension only activates when you ask a question. Your API key and saved guides stay in YOUR browser's local storage.
 
 ## 📄 License
 

@@ -49,9 +49,22 @@ class GuideMeContent {
     
     // Setup visibility change detection (for new tab scenarios)
     this.setupVisibilityDetection();
+    
+    // Setup keyboard shortcut (Escape to stop guide)
+    this.setupKeyboardShortcuts();
 
     // Check for saved guide state on page load (for cross-page navigation)
     this.checkForSavedGuide();
+  }
+  
+  setupKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+      // Escape key stops the guide
+      if (e.key === 'Escape' && this.isGuideActive) {
+        console.log('GuideMe: Escape pressed - stopping guide');
+        this.stopGuide();
+      }
+    });
   }
   
   setupVisibilityDetection() {
@@ -196,9 +209,9 @@ class GuideMeContent {
         return;
       }
       
-      // Check if state is expired (older than 2 minutes)
+      // Check if state is expired (older than 1 minute - reduced from 2)
       const stateAge = Date.now() - (guideState.savedAt || 0);
-      const MAX_AGE = 2 * 60 * 1000; // 2 minutes
+      const MAX_AGE = 1 * 60 * 1000; // 1 minute - shorter timeout
       
       if (stateAge > MAX_AGE) {
         console.log('GuideMe: Saved state expired, clearing...');
@@ -206,12 +219,21 @@ class GuideMeContent {
         return;
       }
       
-      // Check if this is a FORWARD navigation (not back button)
-      // Back navigation = URL we've seen before without explicit action
-      // We should NOT auto-resume on back button - it causes the loop
+      // Check if this is a BACK navigation (not forward)
+      // Back navigation should NOT auto-resume - causes confusion
+      const navEntries = performance.getEntriesByType('navigation');
+      const navType = navEntries.length > 0 ? navEntries[0].type : null;
+      
+      if (navType === 'back_forward') {
+        console.log('GuideMe: Back/forward navigation detected, clearing guide');
+        this.clearGuideState();
+        return;
+      }
+      
+      // Also check our visited URL tracking
       const isBackNavigation = this.wasUrlVisited(window.location.href);
       if (isBackNavigation && !guideState.remainingSteps?.length) {
-        console.log('GuideMe: Back navigation detected, not auto-resuming');
+        console.log('GuideMe: Back navigation detected (URL visited before), not auto-resuming');
         this.clearGuideState();
         return;
       }
@@ -2289,11 +2311,37 @@ class GuideMeContent {
       else if (el.getAttribute('role') === 'menuitem') elType = 'menu-item';
       else if (el.getAttribute('role') === 'tab') elType = 'tab';
       
+      // Detect if it's a dropdown/expandable button
+      const hasDropdownIndicator = el.querySelector('svg, .dropdown-caret, .octicon-triangle-down') ||
+                                   el.getAttribute('aria-expanded') !== null ||
+                                   el.getAttribute('aria-haspopup') !== null;
+      
+      // Detect visual prominence (primary action buttons)
+      const style = window.getComputedStyle(el);
+      const bgColor = style.backgroundColor;
+      const isPrimary = bgColor && !bgColor.includes('rgba(0, 0, 0, 0)') && 
+                       !bgColor.includes('transparent') &&
+                       !bgColor.includes('rgb(255, 255, 255)');
+      
+      // Build context hints
+      let hints = [];
+      if (hasDropdownIndicator) hints.push('dropdown');
+      if (isPrimary && elType === 'button') hints.push('primary-action');
+      if (el.closest('nav, [role="navigation"], [role="tablist"]')) hints.push('navigation');
+      if (el.closest('form')) hints.push('form');
+      
+      // Get nearby context (what's this button near?)
+      const parent = el.closest('div, section, header, aside, main');
+      const nearbyHeading = parent?.querySelector('h1, h2, h3, h4');
+      const nearbyContext = nearbyHeading?.textContent?.trim().substring(0, 30) || '';
+      
       data.elements.push({
         id: guideId,
         text: (text || ariaLabel || '').substring(0, 60).trim(),
         type: elType,
-        location: location || 'page'
+        location: location || 'page',
+        hints: hints.length > 0 ? hints.join(', ') : null,
+        near: nearbyContext || null
       });
     };
 
