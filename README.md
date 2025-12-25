@@ -88,9 +88,20 @@ But even with these limitations, it's useful. Most AI tools don't even try to sh
 
 https://github.com/user-attachments/assets/f46b46e2-f838-4d7a-a443-b61b5e7a59a1
 
-<img width="543" height="762" alt="Extension popup" src="https://github.com/user-attachments/assets/f00d5821-895c-4f15-9424-2558e1185077" />
-
 <img width="911" height="706" alt="Guide in progress" src="https://github.com/user-attachments/assets/8cb5d9c6-888c-4070-99f9-c642a5fb5675" />
+
+New UI Elements
+
+<img width="575" height="723" alt="image" src="https://github.com/user-attachments/assets/b0a46192-5ce9-4d23-80d3-fe4e62cff456" />
+
+Orgainsing the saved guideme steps. 
+
+<img width="571" height="893" alt="image" src="https://github.com/user-attachments/assets/3724fb9c-cbb1-4857-b840-f37409294c92" />
+
+Managing the api keys
+
+<img width="570" height="811" alt="image" src="https://github.com/user-attachments/assets/98f0eed3-201a-4bf2-b9f6-7e713298fdcc" />
+
 
 ## 📦 Installation
 
