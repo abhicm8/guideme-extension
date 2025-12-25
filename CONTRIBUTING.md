@@ -437,11 +437,12 @@ Looking for something to work on?
 | 🟢 Easy | Fix typos, improve documentation |
 | 🟢 Easy | Add more quick action buttons |
 | 🟡 Medium | Firefox extension support |
-| 🟡 Medium | Dark mode theme |
-| 🟡 Medium | Keyboard shortcuts |
+| 🟡 Medium | Test with different AI |
+| 🟡 Medium | Mention few upgrades |
 | 🔴 Hard | Guide recording (watch user clicks) |
 | 🔴 Hard | Guide sharing platform |
 | 🔴 Hard | Support more AI providers |
+| 🔴 Hard | Work on guide for softwares |
 
 ---
 
