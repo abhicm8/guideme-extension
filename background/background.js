@@ -1,6 +1,9 @@
 // GuideMe Background Service Worker
 // Handles AI API communication
 
+// Import GuideMe file format utilities
+import { GuideMeFormat } from '../lib/guideme-format.js';
+
 class GuideMeBackground {
   constructor() {
     this.init();
@@ -43,12 +46,51 @@ class GuideMeBackground {
           .catch(error => sendResponse({ error: error.message }));
         return true;
       }
+
+      if (message.type === 'UPDATE_MACRO') {
+        this.updateMacro(message.payload)
+          .then(result => sendResponse(result))
+          .catch(error => sendResponse({ error: error.message }));
+        return true;
+      }
+      
+      // Export guide to .guideme format
+      if (message.type === 'EXPORT_GUIDE') {
+        this.exportGuide(message.payload)
+          .then(result => sendResponse(result))
+          .catch(error => sendResponse({ error: error.message }));
+        return true;
+      }
+      
+      // Import guide from .guideme format
+      if (message.type === 'IMPORT_GUIDE') {
+        this.importGuide(message.payload)
+          .then(result => sendResponse(result))
+          .catch(error => sendResponse({ error: error.message }));
+        return true;
+      }
+      
+      // Get AI template for guide generation
+      if (message.type === 'GET_AI_TEMPLATE') {
+        sendResponse({ template: GuideMeFormat.getAITemplate() });
+        return true;
+      }
     });
   }
 
   // ============ MACRO MANAGEMENT ============
   async saveMacro(payload) {
-    const { name, steps, startUrl, task } = payload;
+    const { name, steps, startUrl, task, category } = payload;
+    
+    console.log('GuideMe BG: saveMacro called with', steps?.length, 'steps');
+    steps?.forEach((step, i) => {
+      console.log(`GuideMe BG: Step ${i + 1}:`, {
+        desc: step.description?.substring(0, 30),
+        hasRobustSelectors: !!step.robustSelectors,
+        selectorKeys: step.robustSelectors ? Object.keys(step.robustSelectors) : []
+      });
+    });
+    
     const macros = await this.getMacros();
     
     const macro = {
@@ -58,6 +100,7 @@ class GuideMeBackground {
       steps: steps,
       startUrl: startUrl,
       startUrlPattern: new URL(startUrl).hostname,
+      category: category || 'other',
       createdAt: Date.now()
     };
     
@@ -78,6 +121,87 @@ class GuideMeBackground {
     const filtered = macros.filter(m => m.id !== macroId);
     await chrome.storage.local.set({ guideme_macros: filtered });
     return { success: true };
+  }
+
+  async updateMacro(payload) {
+    const { macroId, updates } = payload;
+    const macros = await this.getMacros();
+    const index = macros.findIndex(m => m.id === macroId);
+    
+    if (index === -1) {
+      throw new Error('Guide not found');
+    }
+    
+    // Apply updates
+    macros[index] = {
+      ...macros[index],
+      ...updates,
+      updatedAt: Date.now()
+    };
+    
+    await chrome.storage.local.set({ guideme_macros: macros });
+    return { success: true, macro: macros[index] };
+  }
+
+  // ============ EXPORT/IMPORT (.guideme format) ============
+  async exportGuide(payload) {
+    const { guideId } = payload;
+    const macros = await this.getMacros();
+    const guide = macros.find(m => m.id === guideId);
+    
+    if (!guide) {
+      throw new Error('Guide not found');
+    }
+    
+    // Convert to .guideme format with checksum
+    const exported = await GuideMeFormat.exportGuide(guide);
+    
+    // Generate filename
+    const safeName = guide.name.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+    const filename = `${safeName}.guideme`;
+    
+    return { 
+      success: true, 
+      data: exported,
+      filename: filename,
+      summary: GuideMeFormat.generateSummary(exported)
+    };
+  }
+  
+  async importGuide(payload) {
+    const { jsonContent } = payload;
+    
+    // Validate and parse the .guideme file
+    const result = await GuideMeFormat.importGuide(jsonContent);
+    
+    if (!result.success) {
+      throw new Error(result.error);
+    }
+    
+    // Check for duplicate (same importedFrom ID)
+    const macros = await this.getMacros();
+    const existingImport = macros.find(m => 
+      m.importedFrom && m.importedFrom === result.guide.importedFrom
+    );
+    
+    if (existingImport) {
+      return {
+        success: false,
+        error: 'This guide has already been imported',
+        existingGuide: existingImport.name
+      };
+    }
+    
+    // Save the imported guide
+    macros.push(result.guide);
+    await chrome.storage.local.set({ guideme_macros: macros });
+    
+    return { 
+      success: true, 
+      guide: result.guide,
+      metadata: result.metadata,
+      warnings: result.warnings
+    };
   }
 
   async continueGuide(payload) {
@@ -111,40 +235,55 @@ class GuideMeBackground {
   }
 
   buildContinuationSystemPrompt() {
-    return `You are continuing to guide a user through a multi-page task. The user clicked something and navigated to a new page or view.
-
-YOUR MISSION: Provide ALL steps needed on THIS PAGE to continue toward the goal.
-
-CRITICAL - GIVE ALL STEPS FOR CURRENT PAGE:
-- If 3 buttons need to be clicked on this page, include ALL 3 steps
-- If user can complete multiple actions without page navigation, include ALL of them
-- Only stop giving steps when the NEXT action would cause page navigation
-- This reduces API calls - we want ALL non-navigating steps in ONE response
+    return `You are a website navigation assistant guiding a user through a task. After the user clicks something, you provide next steps.
 
 CRITICAL - WHEN TO MARK COMPLETED:
-- ONLY mark completed: true when the user is LITERALLY on the final screen
-- "Find Budgets page" → completed ONLY when user is ON the Budgets page
-- If user just clicked to navigate somewhere, completed should be FALSE
+Mark "completed": true when ANY of these conditions are met:
+
+1. ✅ USER REACHED THE DESTINATION - They're now on the page/form they asked about
+   - Task: "how to create a repo" → User is on the repo creation page = DONE
+   - Task: "find billing settings" → User is viewing billing settings = DONE
+
+2. ✅ USER CAN NOW PERFORM THE ACTION - You've shown them the final button
+   - Task: "create a repository" → You highlighted the "Create repository" button = DONE
+   - DO NOT continue after showing the final action button
+
+3. ✅ FORM IS VISIBLE - For "how to" tasks, showing the form IS the completion
+   - "How to create a new project" → Repository creation form is visible = DONE
+   - User asked HOW, not to actually create it
+
+4. ✅ TOO MANY STEPS - If 5+ steps have been completed, strongly consider ending
+   - Most tasks can be done in 3-7 steps
+   - After 5 steps, set completed: true unless something is clearly missing
+
+5. ✅ FINAL ACTION IN COMPLETED STEPS - Look at what was already done
+   - If completed steps include "Click Create" or "Click Submit" = DONE
+   - The user already did the final action!
+
+IMPORTANT: Users HATE infinite loops. When in doubt, END THE GUIDE.
 
 OUTPUT FORMAT (JSON only):
 {
   "steps": [
-    {"elementId": "gm-5", "action": "click", "description": "Click on 'Settings' in the menu"},
-    {"elementId": "gm-12", "action": "click", "description": "Click on 'Billing' tab"},
-    {"elementId": "gm-18", "action": "click", "description": "Click on 'Budgets' option"}
+    {"elementId": "gm-5", "action": "click", "description": "Click 'Create' button to finish"}
   ],
-  "canComplete": true,
-  "completed": false,
-  "progress": "In Settings menu, navigating to Budgets"
+  "completed": true,
+  "reason": "User has reached the creation form and clicked Create",
+  "progress": "Complete"
+}
+
+If task is complete with no more steps needed:
+{
+  "steps": [],
+  "completed": true,
+  "reason": "Task complete - user has reached the destination"
 }
 
 RULES:
-1. Include ALL clickable steps until a navigation event would occur
-2. Use ONLY element IDs from the provided list
-3. DO NOT suggest searching - guide through clicking visible elements
-4. If multiple steps can be done on this page, include ALL of them
-5. NEVER mark completed:true unless the FINAL destination is reached
-6. If stuck with no path forward, set canComplete: false`;
+- Maximum 3 steps per response
+- If showing a final action button, this MUST be the last step with completed: true
+- Use ONLY element IDs from the provided list
+- ALWAYS include "reason" explaining your decision`;
   }
 
   buildContinuationUserPrompt(task, completedSteps, url, title, dom) {
@@ -158,14 +297,24 @@ RULES:
       .map(e => e.text)
       .join(' > ');
     
+    const stepCount = completedSteps ? completedSteps.length : 0;
     const completedDesc = completedSteps && completedSteps.length > 0
       ? completedSteps.map((s, i) => `${i + 1}. ${s.description}`).join('\n')
       : 'None yet';
+    
+    // Check if any completed step was a final action
+    const hasFinalAction = completedSteps && completedSteps.some(s => {
+      const d = (s.description || '').toLowerCase();
+      return d.includes('create') || d.includes('submit') || d.includes('save') || 
+             d.includes('confirm') || d.includes('finish');
+    });
 
     return `ORIGINAL TASK: "${task}"
 
-STEPS ALREADY COMPLETED:
+COMPLETED STEPS (${stepCount} total):
 ${completedDesc}
+${hasFinalAction ? '\n⚠️ NOTE: A FINAL ACTION (create/submit/save) WAS ALREADY COMPLETED - consider marking task as done!' : ''}
+${stepCount >= 5 ? '\n⚠️ NOTE: 5+ steps completed - strongly consider marking completed: true' : ''}
 
 NOW ON PAGE: ${title}
 URL: ${url}
@@ -174,7 +323,8 @@ PAGE CONTEXT: ${headings || 'Main page'}
 AVAILABLE ELEMENTS ON THIS PAGE:
 ${elementList}
 
-What steps are needed on THIS page to continue the task? Use element IDs from above.`;
+Analyze: Is the task "${task}" complete? If user is on the right page/form and can perform the action, set completed: true.
+If more steps needed, provide maximum 3 steps using element IDs from above.`;
   }
 
   async generateGuide(payload) {

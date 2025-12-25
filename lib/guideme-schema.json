@@ -1,0 +1,227 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://guideme.dev/schema/v1.json",
+  "title": "GuideMe File Format",
+  "description": "Schema for .guideme files - portable website navigation guides",
+  "type": "object",
+  "required": ["version", "format", "metadata", "steps"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Reference to this schema"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "description": "File format version (e.g., '1.0')"
+    },
+    "format": {
+      "type": "string",
+      "const": "guideme",
+      "description": "Must be 'guideme' to identify file type"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier (UUID v4 recommended)"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Human-readable guide title"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "What this guide helps accomplish"
+        },
+        "author": {
+          "type": "string",
+          "description": "Creator of the guide"
+        },
+        "created": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 creation timestamp"
+        },
+        "updated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 last update timestamp"
+        },
+        "website": {
+          "type": "string",
+          "description": "Target website domain (e.g., 'github.com')"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["development", "account", "settings", "billing", "creation", "navigation", "support", "general"],
+          "description": "Guide category for organization"
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "maxItems": 10,
+          "description": "Searchable tags"
+        },
+        "language": {
+          "type": "string",
+          "default": "en",
+          "description": "Language code (ISO 639-1)"
+        },
+        "estimatedTime": {
+          "type": "string",
+          "description": "Estimated completion time"
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "properties": {
+        "urlPatterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "URL patterns where guide applies (glob format)"
+        },
+        "minVersion": {
+          "type": "string",
+          "description": "Minimum GuideMe extension version"
+        },
+        "testedOn": {
+          "type": "string",
+          "format": "date",
+          "description": "Date when guide was last verified to work"
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "instruction"],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Step number (1-indexed)"
+          },
+          "instruction": {
+            "type": "string",
+            "description": "Human-readable instruction for this step"
+          },
+          "action": {
+            "type": "string",
+            "enum": ["click", "type", "scroll", "hover", "wait", "info"],
+            "default": "click",
+            "description": "Type of interaction"
+          },
+          "page": {
+            "type": "object",
+            "properties": {
+              "urlPattern": {
+                "type": "string",
+                "description": "URL pattern for page validation"
+              },
+              "title": {
+                "type": "string",
+                "description": "Expected page title"
+              }
+            }
+          },
+          "target": {
+            "type": "object",
+            "description": "Element targeting with fallbacks",
+            "properties": {
+              "primary": {
+                "$ref": "#/definitions/selector",
+                "description": "Primary selector (most reliable)"
+              },
+              "fallbacks": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/selector" },
+                "description": "Alternative selectors if primary fails"
+              },
+              "visual": {
+                "type": "object",
+                "properties": {
+                  "position": {
+                    "type": "string",
+                    "description": "Visual position hint (e.g., 'top-right')"
+                  },
+                  "icon": {
+                    "type": "string",
+                    "description": "Icon description if applicable"
+                  },
+                  "color": {
+                    "type": "string",
+                    "description": "Element color hint"
+                  }
+                }
+              }
+            }
+          },
+          "input": {
+            "type": "string",
+            "description": "Text to type (for 'type' action)"
+          },
+          "waitAfter": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["time", "element", "navigation"],
+                "description": "Wait condition type"
+              },
+              "selector": {
+                "type": "string",
+                "description": "Element to wait for"
+              },
+              "timeout": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 30000,
+                "description": "Max wait time in milliseconds"
+              }
+            }
+          }
+        }
+      }
+    },
+    "checksum": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "SHA-256 hash for integrity verification"
+    },
+    "signature": {
+      "type": ["string", "null"],
+      "description": "Optional cryptographic signature"
+    }
+  },
+  "definitions": {
+    "selector": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["data-testid", "aria-label", "css", "xpath", "id", "name", "text", "description"],
+          "description": "Selector strategy type"
+        },
+        "value": {
+          "type": "string",
+          "description": "Selector value"
+        },
+        "tagName": {
+          "type": "string",
+          "description": "HTML tag name (for text matching)"
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

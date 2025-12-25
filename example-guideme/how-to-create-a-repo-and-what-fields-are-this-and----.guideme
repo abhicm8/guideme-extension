@@ -1,0 +1,120 @@
+{
+  "$schema": "https://guideme.dev/schema/v1.json",
+  "version": "1.0",
+  "format": "guideme",
+  "metadata": {
+    "id": "macro_1766637561348",
+    "name": "How to create a repo and what fields are this and ...",
+    "description": "How to create a repo and what fields are this and what should i keep in it",
+    "author": "local",
+    "created": "2025-12-25T04:39:21.348Z",
+    "updated": "2025-12-25T04:40:02.022Z",
+    "website": "github.com",
+    "category": "development",
+    "tags": [
+      "create"
+    ],
+    "language": "en",
+    "estimatedTime": "20 seconds"
+  },
+  "compatibility": {
+    "urlPatterns": [
+      "https://github.com/*",
+      "https://www.github.com/*"
+    ],
+    "minVersion": "1.0.0",
+    "testedOn": "2025-12-25"
+  },
+  "steps": [
+    {
+      "id": 1,
+      "instruction": "Enter a unique name for your repository in the 'Repository name*' field. This is required. (The owner is listed above this field: gm-24).",
+      "action": "click",
+      "target": {
+        "primary": {
+          "type": "css",
+          "value": "#repository-name-input"
+        },
+        "fallbacks": [
+          {
+            "type": "text",
+            "value": "Repository name*",
+            "tagName": "input"
+          },
+          {
+            "type": "id",
+            "value": "repository-name-input"
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "instruction": "Optionally, enter a brief 'Description' for your repository.",
+      "action": "click",
+      "target": {
+        "primary": {
+          "type": "css",
+          "value": "input[name=\"Description\"]"
+        },
+        "fallbacks": [
+          {
+            "type": "text",
+            "value": "Description",
+            "tagName": "input"
+          },
+          {
+            "type": "id",
+            "value": ":ra:"
+          },
+          {
+            "type": "name",
+            "value": "Description"
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "instruction": "Under 'Choose visibility', select 'Public' or 'Private'. Public means anyone can see the code.",
+      "action": "click",
+      "target": {
+        "primary": {
+          "type": "css",
+          "value": "#visibility-anchor-button"
+        },
+        "fallbacks": [
+          {
+            "type": "text",
+            "value": "Public",
+            "tagName": "button"
+          },
+          {
+            "type": "id",
+            "value": "visibility-anchor-button"
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "instruction": "Once you have filled in the required fields, click 'Create repository'.",
+      "action": "click",
+      "target": {
+        "primary": {
+          "type": "css",
+          "value": "form.container-md.px-3 > div.prc-Stack-Stack-UQ9k6 > button.prc-Button-ButtonBase-9n-Xk.mt-4"
+        },
+        "fallbacks": [
+          {
+            "type": "text",
+            "value": "Create repository",
+            "tagName": "button"
+          }
+        ]
+      }
+    }
+  ],
+  "checksum": "sha256:a1b486f014c4ff816deb39ba2b2c602d579f7fd88936de3a187e77caa3789abd",
+  "signature": null
+}

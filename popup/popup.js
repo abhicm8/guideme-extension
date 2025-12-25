@@ -14,6 +14,13 @@ class GuideMePopup {
     // Voice recognition
     this.isListening = false;
 
+    // Guide management state
+    this.allGuides = [];
+    this.currentFilter = 'all';
+    this.searchQuery = '';
+    this.guideToDelete = null;
+    this.guideToRename = null;
+
     this.init();
   }
 
@@ -49,6 +56,8 @@ class GuideMePopup {
     this.backFromSavedBtn = document.getElementById('backFromSavedBtn');
     this.savedGuidesList = document.getElementById('savedGuidesList');
     this.noSavedGuides = document.getElementById('noSavedGuides');
+    this.importGuideBtn = document.getElementById('importGuideBtn');
+    this.importFileInput = document.getElementById('importFileInput');
 
     // Settings elements
     this.settingsBtn = document.getElementById('settingsBtn');
@@ -70,8 +79,25 @@ class GuideMePopup {
     // Modal elements
     this.saveMacroModal = document.getElementById('saveMacroModal');
     this.macroNameInput = document.getElementById('macroNameInput');
+    this.macroCategorySelect = document.getElementById('macroCategorySelect');
     this.cancelMacroBtn = document.getElementById('cancelMacroBtn');
     this.confirmSaveMacroBtn = document.getElementById('confirmSaveMacroBtn');
+
+    // Search & Filter elements
+    this.guideSearchInput = document.getElementById('guideSearchInput');
+    this.categoryPills = document.getElementById('categoryPills');
+
+    // Rename modal elements
+    this.renameGuideModal = document.getElementById('renameGuideModal');
+    this.renameGuideInput = document.getElementById('renameGuideInput');
+    this.renameCategorySelect = document.getElementById('renameCategorySelect');
+    this.cancelRenameBtn = document.getElementById('cancelRenameBtn');
+    this.confirmRenameBtn = document.getElementById('confirmRenameBtn');
+
+    // Delete confirmation modal elements
+    this.deleteConfirmModal = document.getElementById('deleteConfirmModal');
+    this.cancelDeleteBtn = document.getElementById('cancelDeleteBtn');
+    this.confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
   }
 
   bindEvents() {
@@ -101,6 +127,35 @@ class GuideMePopup {
     this.saveCurrentGuideBtn.addEventListener('click', () => this.showSaveMacroModal());
     this.cancelMacroBtn.addEventListener('click', () => this.hideSaveMacroModal());
     this.confirmSaveMacroBtn.addEventListener('click', () => this.saveMacro());
+
+    // Import/Export guides
+    this.importGuideBtn.addEventListener('click', () => this.importFileInput.click());
+    this.importFileInput.addEventListener('change', (e) => this.handleImportFile(e));
+
+    // Search and filter
+    this.guideSearchInput.addEventListener('input', (e) => {
+      this.searchQuery = e.target.value.toLowerCase();
+      this.filterAndRenderGuides();
+    });
+
+    // Category pills
+    this.categoryPills.querySelectorAll('.category-pill').forEach(pill => {
+      pill.addEventListener('click', () => {
+        // Update active state
+        this.categoryPills.querySelectorAll('.category-pill').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        this.currentFilter = pill.dataset.category;
+        this.filterAndRenderGuides();
+      });
+    });
+
+    // Rename modal
+    this.cancelRenameBtn.addEventListener('click', () => this.hideRenameModal());
+    this.confirmRenameBtn.addEventListener('click', () => this.confirmRename());
+
+    // Delete confirmation modal
+    this.cancelDeleteBtn.addEventListener('click', () => this.hideDeleteModal());
+    this.confirmDeleteBtn.addEventListener('click', () => this.confirmDelete());
 
     // Quick buttons
     this.quickBtns.forEach(btn => {
@@ -147,9 +202,9 @@ class GuideMePopup {
       // Check if Opera
       const isOpera = navigator.userAgent.includes('OPR') || navigator.userAgent.includes('Opera');
       if (isOpera) {
-        this.showStatus('🎤 Voice not supported in Opera. Please use Chrome or Edge.', 'error');
+        this.showStatus('Voice not supported in Opera. Please use Chrome or Edge.', 'error');
       } else {
-        this.showStatus('🎤 Voice not supported in this browser. Try Chrome or Edge.', 'error');
+        this.showStatus('Voice not supported in this browser. Try Chrome or Edge.', 'error');
       }
       return;
     }
@@ -172,9 +227,9 @@ class GuideMePopup {
       if (micError.name === 'NotAllowedError') {
         this.showStatus('🎤 Mic blocked. Click 🔒 in address bar → Allow microphone.', 'error');
       } else if (micError.name === 'NotFoundError') {
-        this.showStatus('🎤 No microphone found. Please connect one.', 'error');
+        this.showStatus('No microphone found. Please connect one.', 'error');
       } else {
-        this.showStatus('🎤 Mic error: ' + micError.message, 'error');
+        this.showStatus('Mic error: ' + micError.message, 'error');
       }
       return;
     }
@@ -225,7 +280,7 @@ class GuideMePopup {
           // Just stop listening - don't auto-start guide
           // User can review and click "Guide Me" button manually
           this.stopVoice();
-          this.showStatus('✅ Got it! Click "Guide Me" to start.', 'success');
+          this.showStatus('Got it! Click "Guide Me" to start.', 'success');
         }
       };
 
@@ -241,15 +296,15 @@ class GuideMePopup {
         this.stopVoice();
         
         if (event.error === 'not-allowed') {
-          this.showStatus('🎤 Mic blocked. Click 🔒 in address bar → Allow microphone.', 'error');
+          this.showStatus('Mic blocked. Click the lock icon in address bar to allow.', 'error');
         } else if (event.error === 'no-speech') {
-          this.showStatus('🎤 No speech heard. Click mic and try again.', 'error');
+          this.showStatus('No speech heard. Click mic and try again.', 'error');
         } else if (event.error === 'network') {
-          this.showStatus('🎤 Network error. Check your internet connection.', 'error');
+          this.showStatus('Network error. Check your internet connection.', 'error');
         } else if (event.error === 'audio-capture') {
-          this.showStatus('🎤 Mic not working. Check your microphone.', 'error');
+          this.showStatus('Mic not working. Check your microphone.', 'error');
         } else {
-          this.showStatus('🎤 Error: ' + event.error, 'error');
+          this.showStatus('Voice error: ' + event.error, 'error');
         }
       };
 
@@ -276,7 +331,7 @@ class GuideMePopup {
     } catch (error) {
       console.error('❌ Failed to start voice recognition:', error);
       this.stopVoice();
-      this.showStatus('🎤 Failed to start: ' + error.message, 'error');
+      this.showStatus('Failed to start voice: ' + error.message, 'error');
     }
   }
 
@@ -310,49 +365,154 @@ class GuideMePopup {
   async loadSavedGuides() {
     try {
       const response = await chrome.runtime.sendMessage({ type: 'GET_MACROS' });
-      const guides = response || [];
-      this.renderSavedGuides(guides);
+      this.allGuides = response || [];
+      this.filterAndRenderGuides();
     } catch (error) {
       console.error('Failed to load saved guides:', error);
     }
+  }
+
+  filterAndRenderGuides() {
+    let filtered = this.allGuides;
+
+    // Filter by category
+    if (this.currentFilter && this.currentFilter !== 'all') {
+      filtered = filtered.filter(guide => 
+        (guide.category || 'other').toLowerCase() === this.currentFilter
+      );
+    }
+
+    // Filter by search query
+    if (this.searchQuery) {
+      filtered = filtered.filter(guide =>
+        guide.name.toLowerCase().includes(this.searchQuery) ||
+        (guide.startUrlPattern || '').toLowerCase().includes(this.searchQuery)
+      );
+    }
+
+    this.renderSavedGuides(filtered);
   }
 
   renderSavedGuides(guides) {
     if (guides.length === 0) {
       this.savedGuidesList.classList.add('hidden');
       this.noSavedGuides.classList.remove('hidden');
+      
+      // Update message based on filter/search
+      if (this.searchQuery || this.currentFilter !== 'all') {
+        this.noSavedGuides.innerHTML = `
+          <div class="no-guides-icon">
+            <span class="icon icon-xl">
+              <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            </span>
+          </div>
+          <p>No guides found</p>
+          <p class="no-guides-hint">Try adjusting your search or filter</p>
+        `;
+      } else {
+        this.noSavedGuides.innerHTML = `
+          <div class="no-guides-icon">
+            <span class="icon icon-xl">
+              <svg viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="m9 10 2 2 4-4"/></svg>
+            </span>
+          </div>
+          <p>No saved guides yet</p>
+          <p class="no-guides-hint">Complete a guide to save it here</p>
+          <p class="no-guides-hint">Or import a .guideme file!</p>
+        `;
+      }
       return;
     }
 
     this.savedGuidesList.classList.remove('hidden');
     this.noSavedGuides.classList.add('hidden');
 
-    this.savedGuidesList.innerHTML = guides.map(guide => `
-      <div class="saved-guide-item" data-guide-id="${guide.id}">
-        <span class="saved-guide-icon">📋</span>
-        <div class="saved-guide-info">
-          <div class="saved-guide-name">${this.escapeHtml(guide.name)}</div>
-          <div class="saved-guide-meta">
-            ${guide.startUrlPattern} • ${guide.steps?.length || 0} steps
+    // Icons for categories
+    const categoryIcons = {
+      navigation: '<svg viewBox="0 0 24 24"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>',
+      settings: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+      account: '<svg viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+      other: '<svg viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>'
+    };
+
+    this.savedGuidesList.innerHTML = guides.map(guide => {
+      const category = guide.category || 'other';
+      const categoryIcon = categoryIcons[category] || categoryIcons.other;
+      const importedBadge = guide.imported ? '<span class="guide-badge imported">imported</span>' : '';
+      
+      return `
+        <div class="saved-guide-item" data-guide-id="${guide.id}">
+          <div class="saved-guide-icon">
+            <span class="icon">${categoryIcon}</span>
+          </div>
+          <div class="saved-guide-info">
+            <div class="saved-guide-name">${this.escapeHtml(guide.name)}</div>
+            <div class="saved-guide-meta">
+              <span>${this.escapeHtml(guide.startUrlPattern || '')}</span>
+              <span>•</span>
+              <span>${guide.steps?.length || 0} steps</span>
+              ${importedBadge}
+            </div>
+          </div>
+          <div class="saved-guide-actions">
+            <button class="guide-action-btn edit" data-guide-id="${guide.id}" title="Rename">
+              <span class="icon icon-sm">
+                <svg viewBox="0 0 24 24"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+              </span>
+            </button>
+            <button class="guide-action-btn export" data-guide-id="${guide.id}" title="Export">
+              <span class="icon icon-sm">
+                <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+              </span>
+            </button>
+            <button class="guide-action-btn delete" data-guide-id="${guide.id}" title="Delete">
+              <span class="icon icon-sm">
+                <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+              </span>
+            </button>
           </div>
         </div>
-        <button class="saved-guide-delete" data-guide-id="${guide.id}" title="Delete guide">🗑️</button>
-      </div>
-    `).join('');
+      `;
+    }).join('');
 
-    // Bind click events
+    // Bind click events for play (on guide-info only)
     this.savedGuidesList.querySelectorAll('.saved-guide-item').forEach(item => {
-      item.addEventListener('click', (e) => {
-        if (!e.target.classList.contains('saved-guide-delete')) {
+      // Click on guide info to play
+      const guideInfo = item.querySelector('.saved-guide-info');
+      if (guideInfo) {
+        guideInfo.addEventListener('click', () => {
           this.playSavedGuide(item.dataset.guideId);
-        }
+        });
+      }
+      const guideIcon = item.querySelector('.saved-guide-icon');
+      if (guideIcon) {
+        guideIcon.addEventListener('click', () => {
+          this.playSavedGuide(item.dataset.guideId);
+        });
+      }
+    });
+
+    // Bind edit buttons
+    this.savedGuidesList.querySelectorAll('.guide-action-btn.edit').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.showRenameModal(btn.dataset.guideId);
       });
     });
 
-    this.savedGuidesList.querySelectorAll('.saved-guide-delete').forEach(btn => {
+    // Bind export buttons
+    this.savedGuidesList.querySelectorAll('.guide-action-btn.export').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        this.deleteSavedGuide(btn.dataset.guideId);
+        this.exportGuide(btn.dataset.guideId);
+      });
+    });
+
+    // Bind delete buttons
+    this.savedGuidesList.querySelectorAll('.guide-action-btn.delete').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.showDeleteModal(btn.dataset.guideId);
       });
     });
   }
@@ -365,6 +525,9 @@ class GuideMePopup {
 
   showSaveMacroModal() {
     this.macroNameInput.value = this.currentTask;
+    if (this.macroCategorySelect) {
+      this.macroCategorySelect.value = 'navigation'; // Default
+    }
     this.saveMacroModal.classList.remove('hidden');
     this.macroNameInput.focus();
   }
@@ -380,6 +543,8 @@ class GuideMePopup {
       return;
     }
 
+    const category = this.macroCategorySelect ? this.macroCategorySelect.value : 'other';
+
     try {
       await chrome.runtime.sendMessage({
         type: 'SAVE_MACRO',
@@ -387,28 +552,196 @@ class GuideMePopup {
           name: name,
           task: this.currentTask,
           steps: this.currentSteps,
-          startUrl: this.currentUrl
+          startUrl: this.currentUrl,
+          category: category
         }
       });
 
       this.hideSaveMacroModal();
-      this.showStatus('✅ Guide saved! Find it in 📚 Saved Guides.', 'success');
+      this.showStatus('Guide saved! Find it in Saved Guides.', 'success');
     } catch (error) {
       console.error('Failed to save guide:', error);
       this.showStatus('Failed to save guide', 'error');
     }
   }
 
-  async deleteSavedGuide(guideId) {
+  // ============ RENAME GUIDE ============
+  showRenameModal(guideId) {
+    const guide = this.allGuides.find(g => g.id === guideId);
+    if (!guide) return;
+
+    this.guideToRename = guideId;
+    this.renameGuideInput.value = guide.name;
+    this.renameCategorySelect.value = guide.category || 'other';
+    this.renameGuideModal.classList.remove('hidden');
+    this.renameGuideInput.focus();
+    this.renameGuideInput.select();
+  }
+
+  hideRenameModal() {
+    this.renameGuideModal.classList.add('hidden');
+    this.guideToRename = null;
+  }
+
+  async confirmRename() {
+    if (!this.guideToRename) return;
+
+    const newName = this.renameGuideInput.value.trim();
+    if (!newName) {
+      this.renameGuideInput.style.borderColor = '#dc2626';
+      return;
+    }
+
+    const newCategory = this.renameCategorySelect.value;
+
+    try {
+      await chrome.runtime.sendMessage({
+        type: 'UPDATE_MACRO',
+        payload: {
+          macroId: this.guideToRename,
+          updates: {
+            name: newName,
+            category: newCategory
+          }
+        }
+      });
+
+      this.hideRenameModal();
+      this.showStatus('Guide updated!', 'success');
+      this.loadSavedGuides();
+    } catch (error) {
+      console.error('Failed to rename guide:', error);
+      this.showStatus('Failed to rename guide', 'error');
+    }
+  }
+
+  // ============ DELETE GUIDE WITH CONFIRMATION ============
+  showDeleteModal(guideId) {
+    this.guideToDelete = guideId;
+    this.deleteConfirmModal.classList.remove('hidden');
+  }
+
+  hideDeleteModal() {
+    this.deleteConfirmModal.classList.add('hidden');
+    this.guideToDelete = null;
+  }
+
+  async confirmDelete() {
+    if (!this.guideToDelete) return;
+
     try {
       await chrome.runtime.sendMessage({
         type: 'DELETE_MACRO',
-        payload: { macroId: guideId }
+        payload: { macroId: this.guideToDelete }
       });
+      this.hideDeleteModal();
+      this.showStatus('Guide deleted', 'success');
       this.loadSavedGuides();
     } catch (error) {
       console.error('Failed to delete guide:', error);
+      this.showStatus('Failed to delete guide', 'error');
     }
+  }
+
+  async deleteSavedGuide(guideId) {
+    // Use confirmation modal instead of direct delete
+    this.showDeleteModal(guideId);
+  }
+
+  // ============ EXPORT/IMPORT (.guideme format) ============
+  
+  async exportGuide(guideId) {
+    try {
+      this.showStatus('Exporting guide...', 'info');
+      
+      const response = await chrome.runtime.sendMessage({
+        type: 'EXPORT_GUIDE',
+        payload: { guideId }
+      });
+      
+      if (response.error) {
+        throw new Error(response.error);
+      }
+      
+      // Create download
+      const jsonString = JSON.stringify(response.data, null, 2);
+      const blob = new Blob([jsonString], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      
+      // Trigger download
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = response.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      this.showStatus('Guide exported! Share the .guideme file with others.', 'success');
+      
+      // Log summary for debugging
+      console.log('Exported guide summary:', response.summary);
+      
+    } catch (error) {
+      console.error('Failed to export guide:', error);
+      this.showStatus(`Export failed: ${error.message}`, 'error');
+    }
+  }
+  
+  async handleImportFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    
+    // Reset input so same file can be selected again
+    event.target.value = '';
+    
+    // Validate file type
+    if (!file.name.endsWith('.guideme') && !file.name.endsWith('.json')) {
+      this.showStatus('Please select a .guideme or .json file', 'error');
+      return;
+    }
+    
+    try {
+      this.showStatus('Importing guide...', 'info');
+      
+      // Read file content
+      const jsonContent = await this.readFileAsText(file);
+      
+      // Send to background for validation and import
+      const response = await chrome.runtime.sendMessage({
+        type: 'IMPORT_GUIDE',
+        payload: { jsonContent }
+      });
+      
+      if (!response.success) {
+        throw new Error(response.error || 'Import failed');
+      }
+      
+      // Show success with any warnings
+      let message = `Imported "${response.metadata?.name || 'Guide'}" successfully!`;
+      if (response.warnings && response.warnings.length > 0) {
+        message += ` (${response.warnings.join(', ')})`;
+        console.warn('Import warnings:', response.warnings);
+      }
+      
+      this.showStatus(message, 'success');
+      
+      // Refresh the guides list
+      this.loadSavedGuides();
+      
+    } catch (error) {
+      console.error('Failed to import guide:', error);
+      this.showStatus(`Import failed: ${error.message}`, 'error');
+    }
+  }
+  
+  readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = (e) => reject(new Error('Failed to read file'));
+      reader.readAsText(file);
+    });
   }
 
   async playSavedGuide(guideId) {
@@ -424,10 +757,30 @@ class GuideMePopup {
       // Get current tab
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       
+      // Check if we're on a valid webpage
+      if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
+        this.showStatus('Please navigate to a website first', 'error');
+        return;
+      }
+      
       this.currentTask = guide.task;
       this.currentSteps = guide.steps;
       this.currentStepIndex = 0;
       this.currentUrl = tab.url;
+
+      // First, ensure content script is loaded by injecting it
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content/content.js']
+        });
+      } catch (e) {
+        // Script might already be loaded, which is fine
+        console.log('Content script injection result:', e.message);
+      }
+      
+      // Small delay to ensure script is ready
+      await new Promise(resolve => setTimeout(resolve, 100));
 
       // Send steps to content script (no AI needed!)
       await chrome.tabs.sendMessage(tab.id, {
@@ -442,19 +795,19 @@ class GuideMePopup {
 
       this.showView('guide');
       this.renderCurrentStep();
-      this.showStatus('▶️ Playing guide: ' + guide.name, 'success');
+      this.showStatus('Playing guide: ' + guide.name, 'success');
 
     } catch (error) {
       console.error('Failed to play guide:', error);
-      this.showStatus('Failed to play guide. Make sure you\'re on a webpage.', 'error');
+      this.showStatus('Failed to play guide: ' + error.message, 'error');
     }
   }
 
   updateProviderHint() {
     const hints = {
-      gemini: '🆓 Get free key at aistudio.google.com',
-      openai: '💳 Get key at platform.openai.com (paid)',
-      anthropic: '💳 Get key at console.anthropic.com (paid)'
+      gemini: 'Get free API key at aistudio.google.com',
+      openai: 'Get key at platform.openai.com (paid)',
+      anthropic: 'Get key at console.anthropic.com (paid)'
     };
     this.providerHint.textContent = hints[this.apiProvider.value] || '';
   }
@@ -574,7 +927,7 @@ class GuideMePopup {
     }
 
     this.guideBtn.disabled = true;
-    this.guideBtn.innerHTML = '<span class="btn-icon">⏳</span> Analyzing...';
+    this.guideBtn.innerHTML = '<span class="icon btn-icon"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg></span> Analyzing...';
     this.showStatus('Reading page and generating guide...', 'loading');
 
     try {
@@ -627,7 +980,7 @@ class GuideMePopup {
       this.showStatus(`Error: ${error.message}`, 'error');
     } finally {
       this.guideBtn.disabled = false;
-      this.guideBtn.innerHTML = '<span class="btn-icon">✨</span> Guide Me';
+      this.guideBtn.innerHTML = '<span class="icon btn-icon"><svg viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg></span> Guide Me';
     }
   }
 
@@ -660,8 +1013,8 @@ class GuideMePopup {
 
     // Use description or instruction (handle both field names)
     const stepText = step.description || step.instruction || 'Follow this step';
-    const actionText = step.action ? `<p class="step-hint" style="font-size: 12px; color: #6b7280; margin-top: 8px;">💡 Action: ${step.action}</p>` : '';
-    const hintText = step.hint ? `<p class="step-hint" style="font-size: 12px; color: #6b7280; margin-top: 4px;">💡 ${step.hint}</p>` : '';
+    const actionText = step.action ? `<p class="step-hint">Action: ${step.action}</p>` : '';
+    const hintText = step.hint ? `<p class="step-hint">${step.hint}</p>` : '';
 
     this.currentStep.innerHTML = `
       <span class="step-number">Step ${stepNum} of ${totalSteps}</span>
@@ -672,7 +1025,9 @@ class GuideMePopup {
 
     // Update navigation buttons
     this.prevStepBtn.disabled = this.currentStepIndex === 0;
-    this.nextStepBtn.textContent = this.currentStepIndex === totalSteps - 1 ? 'Done ✓' : 'Next →';
+    this.nextStepBtn.innerHTML = this.currentStepIndex === totalSteps - 1 
+      ? 'Done <span class="icon icon-sm"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span>' 
+      : 'Next <span class="icon icon-sm"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>';
 
     // Update progress bar
     const progress = ((stepNum) / totalSteps) * 100;
@@ -705,7 +1060,7 @@ class GuideMePopup {
     if (newIndex >= this.currentSteps.length) {
       // Guide complete
       await this.stopGuide();
-      this.showStatus('🎉 Guide completed!', 'success');
+      this.showStatus('Guide completed!', 'success');
       this.showView('main');
       return;
     }

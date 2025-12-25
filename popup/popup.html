@@ -11,18 +11,40 @@
     <!-- Header -->
     <header class="header">
       <div class="logo">
-        <span class="logo-icon">🎯</span>
+        <div class="logo-icon">
+          <!-- Target/Crosshair Icon -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <circle cx="12" cy="12" r="10"/>
+            <circle cx="12" cy="12" r="6"/>
+            <circle cx="12" cy="12" r="2"/>
+            <line x1="12" y1="2" x2="12" y2="6"/>
+            <line x1="12" y1="18" x2="12" y2="22"/>
+            <line x1="2" y1="12" x2="6" y2="12"/>
+            <line x1="18" y1="12" x2="22" y2="12"/>
+          </svg>
+        </div>
         <span class="logo-text">GuideMe</span>
       </div>
       <div class="header-actions">
-        <button id="savedGuidesBtn" class="icon-btn" title="Saved Guides">📚</button>
-        <button id="settingsBtn" class="icon-btn" title="Settings">⚙️</button>
+        <button id="savedGuidesBtn" class="icon-btn" title="Saved Guides">
+          <span class="icon">
+            <svg viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="M8 7h6"/><path d="M8 11h8"/></svg>
+          </span>
+        </button>
+        <button id="settingsBtn" class="icon-btn" title="Settings">
+          <span class="icon">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </span>
+        </button>
       </div>
     </header>
 
     <!-- Main View -->
     <main id="mainView" class="main-view">
       <div class="current-site">
+        <span class="icon icon-sm">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        </span>
         <span class="site-label">Currently on:</span>
         <span id="siteName" class="site-name">Loading...</span>
       </div>
@@ -37,15 +59,19 @@
             rows="3"
           ></textarea>
           <button id="voiceBtn" class="voice-btn" title="Voice input (click to speak)">
-            🎤
+            <span class="icon icon-sm">
+              <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+            </span>
           </button>
         </div>
         <div id="voiceStatus" class="voice-status hidden">
           <span class="voice-indicator"></span>
-          <span class="voice-text">🎤 Speak now - a voice popup will appear on the page...</span>
+          <span class="voice-text">Speak now - listening...</span>
         </div>
         <button id="guideBtn" class="guide-btn">
-          <span class="btn-icon">✨</span>
+          <span class="icon btn-icon">
+            <svg viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+          </span>
           Guide Me
         </button>
       </div>
@@ -59,7 +85,7 @@
           <span class="toggle-slider"></span>
           <span class="toggle-label">Auto-save guides</span>
         </label>
-        <span class="auto-save-hint">Saves completed guides automatically</span>
+        <span class="auto-save-hint">Saves completed guides</span>
       </div>
 
       <!-- Quick Actions -->
@@ -74,19 +100,62 @@
     <!-- Saved Guides View -->
     <div id="savedGuidesView" class="saved-guides-view hidden">
       <div class="settings-header">
-        <button id="backFromSavedBtn" class="icon-btn">←</button>
-        <h2>📚 Saved Guides</h2>
+        <button id="backFromSavedBtn" class="icon-btn">
+          <span class="icon">
+            <svg viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+          </span>
+        </button>
+        <h2>
+          <span class="icon">
+            <svg viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
+          </span>
+          Saved Guides
+        </h2>
       </div>
 
       <div class="saved-guides-content">
-        <p class="saved-guides-desc">Replay saved guides instantly without using AI.</p>
+        <!-- Search & Filter -->
+        <div class="search-filter-bar">
+          <div class="search-wrapper">
+            <span class="icon icon-sm">
+              <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            </span>
+            <input type="text" id="guideSearchInput" class="search-input" placeholder="Search guides...">
+          </div>
+        </div>
+
+        <!-- Category Filter Pills -->
+        <div class="category-pills" id="categoryPills">
+          <button class="category-pill active" data-category="all">All</button>
+          <button class="category-pill" data-category="navigation">Navigation</button>
+          <button class="category-pill" data-category="settings">Settings</button>
+          <button class="category-pill" data-category="account">Account</button>
+          <button class="category-pill" data-category="other">Other</button>
+        </div>
+        
+        <!-- Import/Export Actions -->
+        <div class="import-export-actions">
+          <button id="importGuideBtn" class="action-btn import-btn" title="Import .guideme file">
+            <span class="icon icon-sm">
+              <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+            </span>
+            Import
+          </button>
+          <input type="file" id="importFileInput" accept=".guideme,.json" style="display: none;">
+        </div>
+        
         <div id="savedGuidesList" class="saved-guides-list">
           <!-- Guides will be populated here -->
         </div>
         <div id="noSavedGuides" class="no-saved-guides">
-          <span class="no-guides-icon">📭</span>
+          <div class="no-guides-icon">
+            <span class="icon icon-xl">
+              <svg viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="m9 10 2 2 4-4"/></svg>
+            </span>
+          </div>
           <p>No saved guides yet</p>
-          <p class="no-guides-hint">Complete a guide and click "Save" to add it here</p>
+          <p class="no-guides-hint">Complete a guide to save it here</p>
+          <p class="no-guides-hint">Or import a .guideme file!</p>
         </div>
       </div>
     </div>
@@ -94,8 +163,17 @@
     <!-- Settings View -->
     <div id="settingsView" class="settings-view hidden">
       <div class="settings-header">
-        <button id="backBtn" class="icon-btn">←</button>
-        <h2>Settings</h2>
+        <button id="backBtn" class="icon-btn">
+          <span class="icon">
+            <svg viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+          </span>
+        </button>
+        <h2>
+          <span class="icon">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </span>
+          Settings
+        </h2>
       </div>
 
       <div class="settings-content">
@@ -106,7 +184,7 @@
             <option value="openai">OpenAI (GPT-4o-mini)</option>
             <option value="anthropic">Anthropic (Claude)</option>
           </select>
-          <p id="providerHint" class="setting-hint provider-hint">Get free API key at aistudio.google.com</p>
+          <p id="providerHint" class="setting-hint">Get free API key at aistudio.google.com</p>
         </div>
 
         <div class="setting-group">
@@ -117,7 +195,12 @@
             class="setting-input" 
             placeholder="Enter your API key"
           >
-          <p class="setting-hint">🔒 Stored locally, never sent to our servers.</p>
+          <p class="setting-hint">
+            <span class="icon icon-sm">
+              <svg viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            </span>
+            Stored locally, never sent to our servers
+          </p>
         </div>
 
         <div class="setting-group">
@@ -125,15 +208,29 @@
           <input type="color" id="highlightColor" class="setting-color" value="#4F46E5">
         </div>
 
-        <button id="saveSettingsBtn" class="save-btn">Save Settings</button>
+        <button id="saveSettingsBtn" class="save-btn">
+          <span class="icon icon-sm">
+            <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          </span>
+          Save Settings
+        </button>
       </div>
     </div>
 
     <!-- Guide Progress View -->
     <div id="guideView" class="guide-view hidden">
       <div class="guide-header">
-        <button id="stopGuideBtn" class="icon-btn" title="Stop guide">✕</button>
-        <h2>Following Guide</h2>
+        <button id="stopGuideBtn" class="icon-btn" title="Stop guide">
+          <span class="icon">
+            <svg viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </span>
+        </button>
+        <h2>
+          <span class="icon">
+            <svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          </span>
+          Following Guide
+        </h2>
       </div>
 
       <div class="guide-content">
@@ -143,18 +240,31 @@
         </div>
 
         <div class="guide-controls">
-          <button id="prevStepBtn" class="nav-btn" disabled>← Previous</button>
-          <button id="nextStepBtn" class="nav-btn">Next →</button>
+          <button id="prevStepBtn" class="nav-btn" disabled>
+            <span class="icon icon-sm">
+              <svg viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+            </span>
+            Previous
+          </button>
+          <button id="nextStepBtn" class="nav-btn">
+            Next
+            <span class="icon icon-sm">
+              <svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+            </span>
+          </button>
         </div>
 
         <div class="guide-progress">
           <div id="progressBar" class="progress-bar" style="width: 33%"></div>
         </div>
 
-        <!-- Save Guide Section - Always visible during guide -->
+        <!-- Save Guide Section -->
         <div class="save-guide-section">
           <button id="saveCurrentGuideBtn" class="save-guide-btn">
-            <span>💾</span> Save This Guide
+            <span class="icon">
+              <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            </span>
+            Save This Guide
           </button>
         </div>
       </div>
@@ -163,14 +273,28 @@
     <!-- Save Macro Modal -->
     <div id="saveMacroModal" class="modal hidden">
       <div class="modal-content">
-        <h3>💾 Save Guide</h3>
+        <h3>
+          <span class="icon">
+            <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          </span>
+          Save Guide
+        </h3>
         <p class="modal-desc">Save this guide to replay anytime without using AI.</p>
         <input 
           type="text" 
           id="macroNameInput" 
           class="macro-name-input" 
-          placeholder="e.g., GitHub - Find Budgets Page"
+          placeholder="e.g., GitHub - Create New Repo"
         >
+        <div class="category-select-wrapper">
+          <label for="macroCategorySelect">Category</label>
+          <select id="macroCategorySelect" class="category-select">
+            <option value="navigation">Navigation</option>
+            <option value="settings">Settings</option>
+            <option value="account">Account</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
         <div class="modal-actions">
           <button id="cancelMacroBtn" class="modal-btn cancel">Cancel</button>
           <button id="confirmSaveMacroBtn" class="modal-btn confirm">Save</button>
@@ -178,9 +302,58 @@
       </div>
     </div>
 
+    <!-- Rename Guide Modal -->
+    <div id="renameGuideModal" class="modal hidden">
+      <div class="modal-content">
+        <h3>
+          <span class="icon">
+            <svg viewBox="0 0 24 24"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+          </span>
+          Rename Guide
+        </h3>
+        <p class="modal-desc">Enter a new name for this guide.</p>
+        <input 
+          type="text" 
+          id="renameGuideInput" 
+          class="modal-input" 
+          placeholder="New guide name"
+        >
+        <div class="category-select-wrapper">
+          <label for="renameCategorySelect">Category</label>
+          <select id="renameCategorySelect" class="category-select">
+            <option value="navigation">Navigation</option>
+            <option value="settings">Settings</option>
+            <option value="account">Account</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button id="cancelRenameBtn" class="modal-btn cancel">Cancel</button>
+          <button id="confirmRenameBtn" class="modal-btn confirm">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div id="deleteConfirmModal" class="modal hidden">
+      <div class="modal-content">
+        <h3>
+          <span class="icon" style="color: var(--error-500);">
+            <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+          </span>
+          Delete Guide?
+        </h3>
+        <p class="modal-desc">This action cannot be undone. Are you sure you want to delete this guide?</p>
+        <div class="modal-actions">
+          <button id="cancelDeleteBtn" class="modal-btn cancel">Cancel</button>
+          <button id="confirmDeleteBtn" class="modal-btn danger">Delete</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Footer -->
     <footer class="footer">
-      <span class="footer-text">Press <kbd>Ctrl+Shift+G</kbd> to open anytime</span>
+      <span class="footer-text">Press <kbd>Ctrl+Shift+F</kbd> to open anytime</span>
     </footer>
   </div>
 

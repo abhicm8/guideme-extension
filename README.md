@@ -4,13 +4,13 @@
 
 **AI-powered step-by-step guidance for any website**
 
-*Like game hints, but for website*
+*Stop taking notes from tutorials. Let GuideMe point exactly where to click.*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Chrome Extension](https://img.shields.io/badge/Platform-Chrome%20Extension-blue)](https://developer.chrome.com/docs/extensions/)
 [![AI Powered](https://img.shields.io/badge/AI-Gemini%20%7C%20OpenAI%20%7C%20Claude-purple)](https://ai.google.dev/)
 
-[Features](#-features) • [Installation](#-installation) • [Usage](#-usage) • [Configuration](#%EF%B8%8F-configuration) • [Contributing](#-contributing)
+[Features](#-features) • [Installation](#-installation) • [Usage](#-usage) • [Contributing](#-contributing--guide-creation)
 
 </div>
 
@@ -18,40 +18,79 @@
 
 ## 🤔 What is GuideMe?
 
-Ever been stuck on a website, not knowing where to click? **GuideMe** is like having a helpful friend looking over your shoulder, pointing exactly where to click next.
+Most AI tools **summarize pages** or **give you text instructions** you have to follow manually. GuideMe is different — it **actually highlights the exact buttons and links** you need to click, guiding you step-by-step through any workflow.
 
-Ask a question like *"How do I change my profile picture?"* and GuideMe will:
+**The Problem:** You're learning Figma, Photoshop, or navigating a complex admin panel. You ask an AI "how do I do X?" and get a wall of text. Now you have to hunt through menus trying to match the instructions.
+
+**GuideMe's Solution:** Ask your question, and GuideMe will:
 1. Analyze the current page
-2. Identify the exact buttons/links to click
+2. Identify the exact elements to click
 3. Highlight them one by one
 4. Guide you through multi-page flows automatically
 
-**No more hunting through menus. No more confusing UIs.**
+**No more hunting through menus. No more taking notes from YouTube tutorials.**
+
+---
+
+## 🌟 What Makes This Different?
+
+| Traditional AI | GuideMe |
+|----------------|---------|
+| "Click on File > Export > Export As..." | *Highlights the File menu for you* |
+| You read, remember, search | Just follow the highlights |
+| Text instructions | Visual guidance |
+| One-time answer | Save and replay guides forever |
+
+### Two Modes
+
+1. **AI Mode** - Ask any question, AI analyzes the page and creates a guide on-the-fly
+2. **Guide Mode** - Replay saved guides without any AI calls (works offline!)
+
+This helps both:
+- **Users** who just want to get things done
+- **Developers/teams** who can create guides for their users
+
+---
+
+## ⚠️ Honest Limitations
+
+**This is not perfect.** It's a work in progress and can definitely be improved.
+
+- Works best on well-structured pages with clear labels
+- Dynamic content (dropdowns, modals) may need a page refresh
+- AI responses can vary — use refresh if guidance seems off
+- Complex workflows may need multiple guide sessions
+- Currently **websites only** — desktop apps are a future goal
+
+But even with these limitations, it's useful. Most AI tools don't even try to show you *where* to click — they just tell you.
+
+---
 
 ## ✨ Features
 
-- 🧠 **AI-Powered** - Uses Gemini (free!), OpenAI, or Claude to understand any website
-- 🎯 **Precise Highlighting** - Points to exact elements with visual overlays
-- 📄 **Multi-Page Flows** - Automatically continues guidance across page navigations
-- 🔄 **SPA Support** - Works on YouTube, Gmail, Twitter and other Single Page Apps
-- 🎤 **Voice Commands** - Click the mic and speak your question (accessibility!)
-- 💾 **Macro Recording** - Save successful guides and replay without AI
-- 🆓 **Free to Use** - Works with Google Gemini's free API tier
-- 🔒 **Privacy First** - All processing happens locally, your API key stays in your browser
-- 🌐 **Universal** - Works on any website
+### Core
+- 🧠 **AI-Powered** - Gemini (free!), OpenAI, or Claude
+- 🎯 **Visual Highlighting** - Points to exact elements
+- 📄 **Multi-Page Flows** - Continues across page navigations
+- 🔄 **SPA Support** - Works on YouTube, Gmail, Twitter
+- 🎤 **Voice Commands** - Speak your question
+- 🆓 **Free Tier** - Works with Google Gemini's free API
+
+### Guide Management
+- 💾 **Save Guides** - Replay without AI
+- 📁 **Categories** - Organize by type
+- 🔍 **Search & Filter** - Find guides quickly
+- 📤 **Export/Import** - Share `.guideme` files
 
 ## 📸 Screenshots
 
-<img width="1272" height="668" alt="1" src="https://github.com/user-attachments/assets/ac876298-a78a-4d7f-93c5-3a264bf0c2fe" />
-
+<img width="1272" height="668" alt="GuideMe in action" src="https://github.com/user-attachments/assets/ac876298-a78a-4d7f-93c5-3a264bf0c2fe" />
 
 https://github.com/user-attachments/assets/f46b46e2-f838-4d7a-a443-b61b5e7a59a1
 
+<img width="543" height="762" alt="Extension popup" src="https://github.com/user-attachments/assets/f00d5821-895c-4f15-9424-2558e1185077" />
 
-<img width="543" height="762" alt="image" src="https://github.com/user-attachments/assets/f00d5821-895c-4f15-9424-2558e1185077" />
-
-<img width="911" height="706" alt="image" src="https://github.com/user-attachments/assets/8cb5d9c6-888c-4070-99f9-c642a5fb5675" />
-
+<img width="911" height="706" alt="Guide in progress" src="https://github.com/user-attachments/assets/8cb5d9c6-888c-4070-99f9-c642a5fb5675" />
 
 ## 📦 Installation
 
@@ -89,23 +128,36 @@ https://github.com/user-attachments/assets/f46b46e2-f838-4d7a-a443-b61b5e7a59a1
 4. **Click the highlighted element** to auto-advance to the next step
 
 ### 🎤 Voice Commands
-1. Click the **microphone button** 🎤 next to the text input
+1. Click the **microphone button** next to the text input
 2. **Speak your question** naturally
-3. GuideMe will transcribe and automatically start guiding!
+3. GuideMe will transcribe and start guiding!
 
 *Perfect for accessibility or when your hands are busy.*
 
-### 💾 Macros (Save & Replay)
+### 💾 Saving Guides
 1. Complete a guide successfully
-2. Click the **💾 Save** button in the guide header
-3. Give your macro a name (e.g., "Upload YouTube Video")
-4. Next time, find it in **Saved Macros** and click to replay!
+2. Click **"Save This Guide"** button
+3. Give your guide a name and select a category
+4. Find it later in **Saved Guides** (book icon in header)
 
-*Macros replay instantly without using AI - great for repetitive tasks!*
+### 📁 Managing Saved Guides
+- **Search**: Type in the search box to filter guides
+- **Filter**: Click category pills (All, Navigation, Settings, Account, Other)
+- **Rename**: Click the pencil icon on any guide
+- **Export**: Click the export icon to save as `.guideme` file
+- **Delete**: Click the trash icon (with confirmation)
+- **Play**: Click on any guide to replay it instantly (no AI needed!)
+
+### 📤 Sharing Guides
+1. Open **Saved Guides**
+2. Click the **export icon** on any guide
+3. Share the `.guideme` file with others
+4. They can **Import** it and use it immediately!
+
+*Great for teams, documentation, or helping friends navigate complex sites.*
 
 ### Tips
-
-- 🔄 **Can't find element?** Click the refresh button to re-scan the page (useful after opening dropdowns)
+- 🔄 **Can't find element?** Click the refresh button to re-scan the page
 - ✕ **Stop anytime** by clicking the X on the floating panel
 - 🔗 **Multi-page flows** work automatically - the guide persists when you navigate
 
@@ -128,6 +180,7 @@ Click the ⚙️ icon in the extension popup to access settings.
 | **API Provider** | Choose your AI provider (Gemini recommended for free usage) |
 | **API Key** | Your provider's API key (stored locally in browser) |
 | **Highlight Color** | Customize the highlight color for better visibility |
+| **Auto-save Guides** | Automatically save completed guides |
 
 ## 🏗️ How It Works
 
@@ -139,28 +192,19 @@ Click the ⚙️ icon in the extension popup to access settings.
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  1. Content Script extracts all clickable elements          │
-│     Each element gets a unique ID: gm-0, gm-1, gm-2...      │
+│     Captures multiple selectors for reliability             │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  2. Background Script sends element list + question to AI   │
-│     AI sees: gm-5: "Settings" [link] (sidebar)              │
-│              gm-12: "Profile" [button] (main)               │
+│  2. Background Script sends elements + question to AI       │
+│     AI analyzes and returns step-by-step instructions       │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  3. AI returns steps with exact element IDs                 │
-│     Step 1: Click gm-5 ("Settings")                         │
-│     Step 2: Click gm-12 ("Profile")                         │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│  4. Content Script highlights elements by ID                │
-│     User clicks → Auto-advances → Page navigates            │
-│     → Re-extracts DOM → Continues guidance                  │
+│  3. Content Script highlights elements                      │
+│     User clicks → Auto-advances → Persists across pages     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -170,95 +214,116 @@ Click the ⚙️ icon in the extension popup to access settings.
 guideme-extension/
 ├── manifest.json          # Chrome extension manifest (V3)
 ├── popup/                 # Extension popup UI
-│   ├── popup.html
-│   ├── popup.css
-│   └── popup.js
+│   ├── popup.html         # UI with inline SVG icons
+│   ├── popup.css          # CSS design system
+│   └── popup.js           # UI logic and state management
 ├── content/               # Injected into web pages
 │   ├── content.js         # DOM extraction, highlighting
 │   └── overlay.css        # Highlight styles
 ├── background/            # Service worker
 │   └── background.js      # AI API communication
+├── lib/                   # Shared libraries
+│   └── guideme-format.js  # .guideme file format spec
 └── icons/                 # Extension icons
 ```
 
-## 🤝 Contributing
+## 📖 Documentation
 
-Contributions are welcome! Whether it's bug fixes, new features, or documentation improvements.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical deep-dive, design decisions
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Code contributions, common pitfalls
+- **[ECOSYSTEM_PLAN.md](ECOSYSTEM_PLAN.md)** - Vision and roadmap
 
-### Getting Started
+---
 
-1. **Fork** the repository
-2. **Clone** your fork
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/guideme-extension.git
-   ```
-3. **Create** a feature branch
-   ```bash
-   git checkout -b feature/amazing-feature
-   ```
-4. **Make** your changes
-5. **Test** by loading the extension in Chrome
-6. **Commit** your changes
-   ```bash
-   git commit -m 'Add amazing feature'
-   ```
-7. **Push** to your branch
-   ```bash
-   git push origin feature/amazing-feature
-   ```
-8. **Open** a Pull Request
+## 🤝 Contributing & Guide Creation
 
-### Ideas for Contribution
+The most valuable contribution isn't just code — it's **creating guides** that help others.
 
-- 🦊 Firefox extension support
-- 📹 Guide recording and sharing
-- 🌍 Internationalization (i18n)
-- 🎨 Theme customization
-- 📊 Usage analytics dashboard
-- 🤖 Support for more AI providers
-- 🧩 Plugin architecture for custom features
-- 🐛 Bug fixes and performance improvements
+### 🎨 High-Impact Guide Ideas
 
-## 📋 Roadmap
+**Creative Software** (where users constantly struggle):
+- **Adobe Photoshop** - "Remove background", "Apply vintage filter", "Resize for Instagram"
+- **Adobe Premiere** - "Add subtitles", "Export for YouTube", "Color grade footage"
+- **Figma** - "Create a button component", "Set up auto-layout", "Export assets"
+- **Canva** - "Create brand kit", "Animate text", "Remove background"
+- **Blender** - "Basic modeling", "Add materials", "Render settings"
 
-- [ ] Publish to Chrome Web Store
-- [ ] Firefox support
-- [ ] Guide recording/playback
-- [ ] Share guides with others
-- [ ] Pre-built guides for popular sites
-- [ ] Enterprise/team features
-- [ ] Analytics dashboard
+**Developer Tools**:
+- **GitHub** - "Create PR from fork", "Set up Actions", "Configure branch protection"
+- **Vercel/Netlify** - "Deploy from GitHub", "Add custom domain", "Environment variables"
+- **AWS Console** - "Create S3 bucket", "Set up Lambda", "Configure IAM"
+
+**Complex Admin Panels**:
+- **WordPress** - "Install plugin", "Create custom post type"
+- **Shopify** - "Add product variants", "Set up shipping zones"
+- **Google Analytics** - "Create custom report", "Set up goals"
+
+### Why This Matters
+
+Every day, millions of people:
+- Watch 10-minute YouTube tutorials for a 30-second task
+- Take notes from AI and hunt through menus manually
+- Get lost in complex UIs and give up
+
+**Your guide can save thousands of people hours of frustration.**
+
+### How to Contribute Guides
+
+1. Complete a task using GuideMe's AI mode
+2. Save the guide and test the replay
+3. Export as `.guideme` file
+4. Submit via PR or share in Discussions
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for code contribution guidelines.
+
+---
+
+## 🎯 Vision & Roadmap
+
+**Where we are:** Browser extension for websites
+
+**Where we're going:** Desktop application software (Adobe, Figma, Blender, etc.)
+
+New software and websites emerge every day. People will always need help navigating them. Our goal is to be the universal "show me where to click" solution.
+
+### Potential Future
+
+- [ ] Community guide library (browse/search guides)
+- [ ] Desktop app support (beyond browser)
+- [ ] Guide recording (watch clicks, generate guide)
+- [ ] Team/enterprise features
+- [ ] Automation integration (use guides for automated workflows)
+
+---
 
 ## 🐛 Known Limitations
 
 - Works best on well-structured pages with clear labels
-- Dynamic content (dropdowns, modals) may require clicking the refresh button
-- AI responses may vary - use refresh if guidance seems incorrect
+- Dynamic content (dropdowns, modals) may require clicking refresh
+- AI responses may vary — use refresh if guidance seems incorrect
 - Some complex workflows may need multiple guide sessions
+- **Currently websites only** — desktop apps are a future goal
 
 ## ❓ FAQ
 
 **Q: Is my API key safe?**
-> Yes! Your API key is stored only in your browser's local storage and is only sent to your chosen AI provider (Google, OpenAI, or Anthropic).
+> Yes! Stored only in your browser's local storage, sent only to your chosen AI provider.
 
 **Q: Does GuideMe work offline?**
-> No, it requires an internet connection to communicate with the AI provider.
+> Saved guides work offline! New guides require internet for AI.
 
-**Q: Why did GuideMe highlight the wrong element?**
-> AI isn't perfect. Try clicking the 🔄 refresh button to re-scan the page, especially after opening menus or dropdowns.
+**Q: Why did it highlight the wrong element?**
+> AI isn't perfect. Click the refresh button to re-scan.
 
-**Q: Can I use this commercially?**
-> Yes! GuideMe is MIT licensed, allowing commercial use.
+**Q: Can I share guides with my team?**
+> Yes! Export as `.guideme` files and share them.
+
+**Q: How is this different from other AI tools?**
+> Most AI tools give you text instructions. GuideMe actually highlights the elements on screen — visual guidance, not just words.
 
 ## 📄 License
 
 This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
-
-This means you can:
-- ✅ Use commercially
-- ✅ Modify
-- ✅ Distribute
-- ✅ Use privately
 
 ## 👤 Author
 

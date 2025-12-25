@@ -9,6 +9,7 @@ class GuideMeContent {
     this.totalStepsCompleted = 0; // Total steps done in this session
     this.isMultiPageTask = false; // Flag for multi-page tasks
     this.isSavedGuideReplay = false; // Flag for replaying saved guides (no AI)
+    this.isFinalStepBatch = false; // Flag when AI says this is the last batch
     this.allStepsForSaving = []; // Store ALL steps for auto-save
     this.visitedUrls = []; // Track visited URLs to detect back navigation
     this.highlightColor = '#4F46E5';
@@ -70,9 +71,10 @@ class GuideMeContent {
         // and we have a guide active, check if we should stop
         if (hiddenDuration > 5000 && this.isGuideActive) {
           // User spent significant time in another tab - likely following guide there
-          // Stop the guide in this tab to prevent confusion
-          console.log('GuideMe: Guide likely continued in another tab, stopping here');
-          this.stopGuide();
+          // IMPORTANT: Only stop LOCAL guide instance, do NOT clear shared storage!
+          // The new tab needs the saved state (allStepsForSaving, etc.)
+          console.log('GuideMe: Guide likely continued in another tab, stopping LOCAL instance only');
+          this.stopGuideLocalOnly();
         }
         this.tabHiddenTime = null;
       }
@@ -216,6 +218,7 @@ class GuideMeContent {
       
       console.log('GuideMe: Found saved guide task:', guideState.task);
       console.log('GuideMe: Remaining steps:', guideState.remainingSteps?.length || 0);
+      console.log('GuideMe: Restored allStepsForSaving:', guideState.allStepsForSaving?.length || 0);
       
       this.originalTask = guideState.task;
       this.highlightColor = guideState.highlightColor || '#4F46E5';
@@ -268,18 +271,64 @@ class GuideMeContent {
   trackStepCompletion() {
     // Track the current step as completed
     const completedStep = this.currentSteps[this.currentStepIndex];
+    console.log('GuideMe: ===== trackStepCompletion START =====');
+    console.log('GuideMe: Step:', completedStep?.description?.substring(0, 50));
+    console.log('GuideMe: currentHighlightedElement:', this.currentHighlightedElement ? 'EXISTS' : 'NULL');
+    console.log('GuideMe: isSavedGuideReplay:', this.isSavedGuideReplay);
+    console.log('GuideMe: allStepsForSaving before:', (this.allStepsForSaving || []).length);
+    
     if (completedStep) {
+      // CRITICAL: Capture robust selectors NOW while element is in DOM
+      let robustSelectors = null;
+      if (this.currentHighlightedElement) {
+        // Make sure element is still in DOM
+        if (document.body.contains(this.currentHighlightedElement)) {
+          robustSelectors = this.generateRobustSelectors(this.currentHighlightedElement);
+          console.log('GuideMe: ✓ Captured robust selectors:', Object.keys(robustSelectors || {}));
+        } else {
+          console.log('GuideMe: ✗ Element no longer in DOM!');
+        }
+      } else {
+        console.log('GuideMe: ✗ No currentHighlightedElement!');
+      }
+      
       this.completedSteps.push({
         description: completedStep.description || '',
         action: completedStep.action || 'click',
         page: window.location.href,
-        completedAt: Date.now()
+        completedAt: Date.now(),
+        robustSelectors: robustSelectors // Store for replay!
       });
-      console.log('GuideMe: Tracked completed step:', completedStep.description);
+      
+      // Also add to allStepsForSaving with selectors
+      if (!this.isSavedGuideReplay && this.allStepsForSaving) {
+        const alreadyExists = this.allStepsForSaving.some(
+          s => s.description === completedStep.description
+        );
+        console.log('GuideMe: alreadyExists check:', alreadyExists);
+        
+        if (!alreadyExists) {
+          const stepToSave = {
+            description: completedStep.description,
+            action: completedStep.action || 'click',
+            element: completedStep.element || 'body',
+            robustSelectors: robustSelectors // Include robust selectors!
+          };
+          this.allStepsForSaving.push(stepToSave);
+          console.log('GuideMe: ✓ Added to allStepsForSaving:', stepToSave.description.substring(0, 30));
+          console.log('GuideMe: allStepsForSaving now:', this.allStepsForSaving.length);
+        } else {
+          console.log('GuideMe: ✗ Step already exists, not adding');
+        }
+      } else {
+        console.log('GuideMe: ✗ Not saving - isSavedGuideReplay:', this.isSavedGuideReplay);
+      }
+      
+      console.log('GuideMe: ===== trackStepCompletion END =====');
     }
   }
 
-  saveStateForNavigation() {
+  async saveStateForNavigation() {
     // Calculate remaining steps (steps after current one)
     const remainingSteps = this.currentSteps.slice(this.currentStepIndex + 1);
     
@@ -300,11 +349,26 @@ class GuideMeContent {
       visitedUrls: this.visitedUrls || []
     };
     
-    // Save to both storages for reliability
-    chrome.storage.local.set({ activeGuide: guideState });
+    console.log('GuideMe: saveStateForNavigation - allStepsForSaving:', (this.allStepsForSaving || []).length);
+    
+    // Save to BOTH storages for maximum reliability
+    // chrome.storage.local is shared across tabs, localStorage is per-origin
+    
+    // 1. Save to chrome.storage.local (shared across all tabs - most important for cross-domain!)
+    try {
+      await chrome.storage.local.set({ activeGuide: guideState });
+      console.log('GuideMe: ✓ Saved to chrome.storage.local');
+    } catch (e) {
+      console.error('GuideMe: chrome.storage save failed:', e);
+    }
+    
+    // 2. Also save to localStorage (faster, but per-origin only)
     try {
       localStorage.setItem('guideme_backup', JSON.stringify(guideState));
-    } catch (e) {}
+      console.log('GuideMe: ✓ Saved to localStorage');
+    } catch (e) {
+      console.error('GuideMe: localStorage save failed:', e);
+    }
     
     console.log('GuideMe: State saved for navigation, remaining steps:', remainingSteps.length);
   }
@@ -312,6 +376,8 @@ class GuideMeContent {
   async requestGuideContinuation() {
     // Show loading state
     this.showContinuationLoading();
+    
+    console.log('GuideMe: requestGuideContinuation - current allStepsForSaving:', (this.allStepsForSaving || []).length);
     
     try {
       // Get current page DOM
@@ -329,24 +395,35 @@ class GuideMeContent {
         }
       });
       
+      console.log('GuideMe: requestGuideContinuation response:', {
+        hasSteps: !!(response.steps && response.steps.length),
+        stepCount: response.steps?.length || 0,
+        completed: response.completed,
+        error: response.error
+      });
+      
       if (response.error) {
         console.error('GuideMe: Continuation failed:', response.error);
         this.showContinuationError(response.error);
         return;
       }
       
+      // IMPORTANT: Check for steps FIRST before checking completed flag
       if (response.steps && response.steps.length > 0) {
         this.hideContinuationLoading();
         this.currentSteps = response.steps;
         this.currentStepIndex = 0;
+        this.isFinalStepBatch = response.completed === true;
+        console.log('GuideMe: Got', response.steps.length, 'steps, isFinalBatch:', this.isFinalStepBatch);
         this.startGuide();
         this.saveGuideState();
       } else if (response.completed) {
-        this.showTaskCompleted();
+        console.log('GuideMe: AI says task complete (no more steps)');
+        await this.showTaskCompleted();
       } else {
         // No steps and not completed - might be an issue
         this.hideContinuationLoading();
-        console.log('GuideMe: No more steps for this page');
+        console.log('GuideMe: No more steps for this page (odd state)');
       }
     } catch (error) {
       console.error('GuideMe: Failed to continue guide:', error);
@@ -419,12 +496,20 @@ class GuideMeContent {
     });
   }
 
-  showTaskCompleted() {
+  async showTaskCompleted() {
     this.hideContinuationLoading();
     
-    // IMMEDIATELY clear all state to prevent re-activation
+    console.log('GuideMe: showTaskCompleted called, allStepsForSaving:', (this.allStepsForSaving || []).length);
+    
+    // Auto-save BEFORE clearing state (so we don't lose steps from previous pages!)
+    if (!this.isSavedGuideReplay && (this.allStepsForSaving || []).length > 0) {
+      console.log('GuideMe: Auto-saving before completion clear...');
+      await this.autoSaveGuideIfEnabled();
+    }
+    
+    // THEN clear all state to prevent re-activation
     this.isGuideActive = false;
-    this.clearGuideState();
+    await this.clearGuideState();
     try {
       localStorage.removeItem('guideme_backup');
     } catch (e) {}
@@ -576,13 +661,19 @@ class GuideMeContent {
     }
 
     try {
+      // IMPORTANT: Enhance steps with robust selectors before saving
+      // This ensures saved guides can find elements even when gm-* IDs change
+      const enhancedSteps = this.enhanceStepsForSaving(this.allStepsForSaving || this.currentSteps);
+      
+      console.log('GuideMe: Saving guide with', enhancedSteps.length, 'enhanced steps');
+      
       // Send save request to background
       await chrome.runtime.sendMessage({
         type: 'SAVE_MACRO',
         payload: {
           name: name,
           task: this.originalTask,
-          steps: this.currentSteps,
+          steps: enhancedSteps,
           startUrl: window.location.href
         }
       });
@@ -593,6 +684,165 @@ class GuideMeContent {
     } catch (error) {
       console.error('GuideMe: Failed to save guide:', error);
       input.style.borderColor = '#dc2626';
+    }
+  }
+
+  // Enhance steps with multiple robust selectors for reliable replay
+  enhanceStepsForSaving(steps) {
+    if (!steps || !Array.isArray(steps)) return [];
+    
+    return steps.map((step, index) => {
+      const enhanced = { ...step };
+      const elementId = step.element || step.selector;
+      
+      // Try to find the actual element to extract robust selectors
+      let element = null;
+      if (elementId && elementId.startsWith('gm-')) {
+        element = document.querySelector(`[data-guideme-id="${elementId}"]`);
+      }
+      
+      if (element) {
+        // Generate multiple fallback selectors
+        enhanced.robustSelectors = this.generateRobustSelectors(element);
+        console.log(`GuideMe: Step ${index + 1} enhanced with selectors:`, enhanced.robustSelectors);
+      } else {
+        // Element not in current DOM - use text-based fallback
+        enhanced.robustSelectors = {
+          description: step.description || step.instruction || '',
+          keywords: this.extractKeywords(step.description || step.instruction || '')
+        };
+      }
+      
+      // Keep original element reference too
+      enhanced.originalElement = elementId;
+      
+      return enhanced;
+    });
+  }
+
+  // Generate multiple selectors for an element (for robust replay)
+  generateRobustSelectors(element) {
+    console.log('GuideMe: generateRobustSelectors called for:', element?.tagName, element?.id || '(no id)');
+    
+    const selectors = {
+      // Most stable - data attributes
+      dataTestId: element.dataset?.testid || element.dataset?.testId || element.getAttribute('data-test-id'),
+      dataId: element.dataset?.id,
+      
+      // Semantic - good stability
+      ariaLabel: element.getAttribute('aria-label'),
+      role: element.getAttribute('role'),
+      name: element.name,
+      title: element.title,
+      
+      // ID - only if it doesn't look dynamic
+      id: element.id && !element.id.match(/^[0-9]/) && !element.id.match(/[0-9]{5,}/) ? element.id : null,
+      
+      // Text content - last resort
+      textContent: this.getElementText(element)?.substring(0, 60)?.trim(),
+      
+      // Tag info
+      tagName: element.tagName?.toLowerCase(),
+      type: element.type,
+      
+      // Unique CSS selector (generated)
+      cssSelector: this.generateStableSelector(element),
+      
+      // Visual position hint
+      position: this.getElementPosition(element)
+    };
+    
+    // Remove null/undefined values
+    Object.keys(selectors).forEach(key => {
+      if (!selectors[key]) delete selectors[key];
+    });
+    
+    console.log('GuideMe: generateRobustSelectors returning:', Object.keys(selectors));
+    return selectors;
+  }
+
+  // Generate a stable CSS selector that doesn't rely on dynamic IDs
+  generateStableSelector(element) {
+    try {
+      // Try data-testid first
+      const testId = element.dataset?.testid || element.getAttribute('data-test-id');
+      if (testId) return `[data-testid="${testId}"]`;
+      
+      // Try aria-label
+      const ariaLabel = element.getAttribute('aria-label');
+      if (ariaLabel && ariaLabel.length < 50) {
+        return `${element.tagName.toLowerCase()}[aria-label="${ariaLabel}"]`;
+      }
+      
+      // Try name attribute
+      if (element.name) {
+        return `${element.tagName.toLowerCase()}[name="${element.name}"]`;
+      }
+      
+      // Try stable ID (not dynamic-looking)
+      if (element.id && !element.id.match(/[0-9]{4,}/) && !element.id.match(/^:r/)) {
+        return `#${element.id}`;
+      }
+      
+      // Try role + text combo
+      const role = element.getAttribute('role');
+      const text = this.getElementText(element)?.substring(0, 30)?.trim();
+      if (role && text) {
+        return `[role="${role}"]`;  // Will combine with text search
+      }
+      
+      // Build path selector as last resort
+      return this.buildPathSelector(element);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  buildPathSelector(element, maxDepth = 3) {
+    const path = [];
+    let current = element;
+    let depth = 0;
+    
+    while (current && current !== document.body && depth < maxDepth) {
+      let selector = current.tagName.toLowerCase();
+      
+      // Add distinguishing attributes
+      if (current.getAttribute('role')) {
+        selector += `[role="${current.getAttribute('role')}"]`;
+      } else if (current.className && typeof current.className === 'string') {
+        const stableClasses = current.className.split(' ')
+          .filter(c => c && !c.match(/^[a-z]{1,3}[A-Z0-9]/) && !c.match(/[0-9]{4,}/))
+          .slice(0, 2);
+        if (stableClasses.length) {
+          selector += '.' + stableClasses.join('.');
+        }
+      }
+      
+      path.unshift(selector);
+      current = current.parentElement;
+      depth++;
+    }
+    
+    return path.join(' > ');
+  }
+
+  getElementPosition(element) {
+    try {
+      const rect = element.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      
+      let horizontal = 'center';
+      if (rect.left < viewportWidth * 0.33) horizontal = 'left';
+      else if (rect.right > viewportWidth * 0.67) horizontal = 'right';
+      
+      let vertical = 'middle';
+      if (rect.top < viewportHeight * 0.33) vertical = 'top';
+      else if (rect.bottom > viewportHeight * 0.67) vertical = 'bottom';
+      
+      return `${vertical}-${horizontal}`;
+    } catch (e) {
+      return null;
     }
   }
 
@@ -689,10 +939,13 @@ class GuideMeContent {
         this.currentStepIndex = 0;
         this.originalTask = message.payload.task || '';
         this.isSavedGuideReplay = message.payload.isMacro || message.payload.isSavedGuide || false;
+        this.isFinalStepBatch = false; // Reset - AI will tell us when we're on final batch
         
-        // Store all steps for auto-save (deep copy at start)
-        // This captures the INITIAL steps before any mutations
-        this.allStepsForSaving = JSON.parse(JSON.stringify(this.currentSteps));
+        // IMPORTANT: Start with EMPTY allStepsForSaving
+        // Steps will be added WITH robust selectors as user completes them
+        // This ensures we capture actual DOM selectors, not just gm-* IDs
+        this.allStepsForSaving = [];
+        
         console.log('GuideMe: Starting guide with', this.currentSteps.length, 'steps');
         console.log('GuideMe: Is saved guide replay:', this.isSavedGuideReplay);
         console.log('GuideMe: Steps descriptions:', this.currentSteps.map(s => s.description?.substring(0, 30)));
@@ -991,6 +1244,7 @@ class GuideMeContent {
     // Reset counters for fresh guide (but not if continuing)
     if (this.totalStepsCompleted === 0) {
       this.isMultiPageTask = false;
+      this.continuationCount = 0; // Reset continuation counter
     }
     this.createControlPanel();
     this.highlightStep(this.currentStepIndex);
@@ -1016,6 +1270,7 @@ class GuideMeContent {
     this.allStepsForSaving = []; // Clear saved steps
     this.visitedUrls = []; // Clear visited URLs
     this.originalTask = '';
+    this.continuationCount = 0; // Reset continuation counter
     
     // Clear ALL saved state to prevent unwanted resumption
     this.clearGuideState();
@@ -1025,6 +1280,28 @@ class GuideMeContent {
     
     // Note: We keep SPA detection active as it's needed for new guides
     console.log('GuideMe: Guide stopped and all state cleared');
+  }
+
+  // Stop only the LOCAL guide instance without clearing shared storage
+  // Used when user navigates to a new tab - we don't want to wipe state needed by the new tab
+  stopGuideLocalOnly() {
+    this.isGuideActive = false;
+    // Cancel any pending retries
+    if (this.pendingRetry) {
+      clearTimeout(this.pendingRetry);
+      this.pendingRetry = null;
+    }
+    this.clearHighlights();
+    this.removeControlPanel();
+    this.removeEventListeners();
+    
+    // Reset local state but DON'T clear shared storage
+    this.currentSteps = [];
+    this.currentStepIndex = 0;
+    // Keep completedSteps, allStepsForSaving, etc. in memory
+    // but don't use them (isGuideActive = false)
+    
+    console.log('GuideMe: Local guide instance stopped (shared state preserved for other tabs)');
   }
 
   cleanupSPADetection() {
@@ -1089,7 +1366,7 @@ class GuideMeContent {
     window.addEventListener('resize', this.resizeHandler);
 
     // Detect clicks on highlighted element to auto-advance
-    this.clickHandler = (e) => {
+    this.clickHandler = async (e) => {
       if (!this.isGuideActive) return;
       
       // CRITICAL: Only advance if we have a highlighted element AND user clicked on it
@@ -1113,7 +1390,7 @@ class GuideMeContent {
       
       // IMMEDIATELY save state before navigation might occur
       this.trackStepCompletion();
-      this.saveStateForNavigation();
+      await this.saveStateForNavigation(); // MUST await to ensure data is saved before navigation!
         
       // Auto-advance to next step after a short delay (if no navigation)
       setTimeout(() => {
@@ -1332,16 +1609,22 @@ class GuideMeContent {
     const step = this.currentSteps[this.currentStepIndex];
     const pageStepNum = this.currentStepIndex + 1;
     const pageTotal = this.currentSteps.length;
-    const overallStep = this.totalStepsCompleted + pageStepNum;
     
-    console.log('GuideMe: updateControlPanel - step', pageStepNum, 'of', pageTotal);
+    // Calculate overall step: steps from previous pages + current page step
+    // allStepsForSaving contains ALL completed steps across pages
+    const overallCompleted = (this.allStepsForSaving || []).length;
+    const overallStep = overallCompleted + 1; // +1 for the current step we're showing
+    
+    console.log('GuideMe: updateControlPanel - step', pageStepNum, 'of', pageTotal, '(overall:', overallStep, ')');
     console.log('GuideMe: Step description:', step.description?.substring(0, 50));
 
-    // Show overall journey step number (not "X of Y" since we don't know total)
+    // Show step number based on context
     const stepNumberEl = this.controlPanel.querySelector('.guideme-step-number');
-    if (this.isMultiPageTask || this.totalStepsCompleted > 0) {
+    if (this.isMultiPageTask || overallCompleted > 0) {
+      // Multi-page: show overall progress
       stepNumberEl.textContent = `Step ${overallStep} • Multi-page`;
     } else {
+      // Single page: show X of Y
       stepNumberEl.textContent = `Step ${pageStepNum} of ${pageTotal}`;
     }
     
@@ -1356,13 +1639,21 @@ class GuideMeContent {
       hintEl.style.display = 'none';
     }
 
-    // Update buttons - always show "Next" since we might have more pages
+    // Update buttons
     const prevBtn = this.controlPanel.querySelector('.guideme-prev-btn');
     const nextBtn = this.controlPanel.querySelector('.guideme-next-btn');
     
     prevBtn.disabled = this.currentStepIndex === 0 && this.totalStepsCompleted === 0;
-    // Always show "Next →" - we'll check for completion after clicking
-    nextBtn.textContent = 'Next →';
+    
+    // On the last step, show "Done ✓" button that completes the guide
+    const isLastStep = this.currentStepIndex === this.currentSteps.length - 1;
+    if (isLastStep) {
+      nextBtn.textContent = '✓ Done';
+      nextBtn.title = 'Click to complete this guide';
+    } else {
+      nextBtn.textContent = 'Next →';
+      nextBtn.title = '';
+    }
 
     // Update progress bar (pulse if multi-page to show ongoing)
     const progressBar = this.controlPanel.querySelector('.guideme-progress-fill');
@@ -1394,24 +1685,44 @@ class GuideMeContent {
 
   nextStep() {
     // For live guides (not replay), track the completed step
-    // Note: trackStepCompletion() is called by click handler, so don't duplicate here
     const completedStep = this.currentSteps[this.currentStepIndex];
     
-    // Only increment counter (tracking already done by click handler for live clicks)
+    console.log('GuideMe: nextStep() called, currentStepIndex:', this.currentStepIndex, 'of', this.currentSteps.length);
+    console.log('GuideMe: currentHighlightedElement exists:', !!this.currentHighlightedElement);
+    
     if (completedStep) {
-      this.totalStepsCompleted++;
+      // NOTE: Do NOT increment totalStepsCompleted here!
+      // totalStepsCompleted tracks steps completed on PREVIOUS pages.
+      // It should only be updated when moving to a new page (in saveStateForNavigation).
       
-      // Add to allStepsForSaving if not already there
+      // ALWAYS capture robust selectors here (whether user clicked element or pressed Next)
+      // This ensures selectors are saved even when using the Next button
       if (!this.isSavedGuideReplay && this.allStepsForSaving) {
         const alreadyExists = this.allStepsForSaving.some(
           s => s.description === completedStep.description
         );
+        
+        console.log('GuideMe: Step already in allStepsForSaving:', alreadyExists);
+        
         if (!alreadyExists) {
+          // Capture robust selectors from currently highlighted element (if available)
+          let robustSelectors = null;
+          if (this.currentHighlightedElement && document.body.contains(this.currentHighlightedElement)) {
+            robustSelectors = this.generateRobustSelectors(this.currentHighlightedElement);
+            console.log('GuideMe: ✓ Captured selectors via nextStep():', robustSelectors);
+          } else {
+            console.log('GuideMe: ✗ No currentHighlightedElement to capture selectors from!');
+          }
+          
           this.allStepsForSaving.push({
             description: completedStep.description,
             action: completedStep.action || 'click',
-            element: completedStep.element || 'body'
+            element: completedStep.element || 'body',
+            robustSelectors: robustSelectors
           });
+          
+          console.log('GuideMe: Added step to allStepsForSaving, total:', this.allStepsForSaving.length);
+          console.log('GuideMe: Step has robustSelectors:', !!robustSelectors);
         }
       }
     }
@@ -1426,21 +1737,119 @@ class GuideMeContent {
         this.saveGuideState(); // Save progress
       }, 300);
     } else {
-      // All steps on THIS PAGE complete
+      // All steps on THIS PAGE/BATCH complete
       // For saved guide replays, just show completion (no AI continuation)
       if (this.isSavedGuideReplay) {
         console.log('GuideMe: Saved guide replay complete');
         this.showFinalCompletion();
+      } else if (this.isFinalStepBatch) {
+        // AI already told us this was the final batch - no need to ask for more
+        console.log('GuideMe: Final step batch complete - guide done!');
+        this.showFinalCompletion();
       } else {
-        // Live guide - request continuation from AI
-        console.log('GuideMe: All steps on this page done, requesting continuation...');
-        this.saveGuideState();
-        this.requestContinuation();
+        // Check if we should auto-complete based on step count or task type
+        const shouldAutoComplete = this.shouldAutoComplete();
+        
+        if (shouldAutoComplete) {
+          console.log('GuideMe: Auto-completing guide (reached logical end)');
+          this.showFinalCompletion();
+        } else {
+          // Live guide - request continuation from AI
+          console.log('GuideMe: All steps on this page done, requesting continuation...');
+          this.saveGuideState();
+          this.requestContinuation();
+        }
       }
     }
   }
 
+  // Detect if we should auto-complete the guide
+  shouldAutoComplete() {
+    const task = (this.originalTask || '').toLowerCase();
+    
+    // Rule 1: If we've done 12+ steps total, time to stop (reduced from 15)
+    if (this.totalStepsCompleted >= 12) {
+      console.log('GuideMe: Auto-complete triggered - 12+ steps completed');
+      return true;
+    }
+    
+    // Rule 2: Check the CURRENT step we just completed (not the next one)
+    const completedStep = this.currentSteps[this.currentStepIndex];
+    if (completedStep) {
+      const desc = (completedStep.description || '').toLowerCase();
+      
+      // Strong completion keywords - these DEFINITELY end the guide
+      const strongCompletionWords = [
+        'create repository', 'create repo', 'create project', 'create account',
+        'submit form', 'submit request', 'save changes', 'save settings',
+        'confirm', 'finish setup', 'complete registration', 'sign up',
+        'create the', 'submit the', 'publish', 'send message', 'post comment',
+        'click create', 'click submit', 'click save', 'click confirm',
+        'press create', 'press submit', 'click the create', 'click the submit'
+      ];
+      
+      if (strongCompletionWords.some(phrase => desc.includes(phrase))) {
+        console.log('GuideMe: Auto-complete - strong completion action:', desc.substring(0, 60));
+        return true;
+      }
+      
+      // Medium completion keywords - end if we have enough steps
+      const mediumCompletionWords = ['create', 'submit', 'save', 'done', 'finish', 'complete', 'confirm', 'publish', 'send', 'post'];
+      if (this.totalStepsCompleted >= 5 && mediumCompletionWords.some(kw => desc.includes(kw))) {
+        console.log('GuideMe: Auto-complete - completion action with 5+ steps:', desc.substring(0, 50));
+        return true;
+      }
+    }
+    
+    // Rule 3: Check if task was asking "how to" do something
+    // If we've shown them the form/page AND pointed to the final button, we're done
+    const isHowToTask = /^(how|show me how|help me|i want to|i need to)/i.test(task);
+    if (isHowToTask && this.totalStepsCompleted >= 4) {
+      // Check if any completed step had a final action word
+      const allSteps = this.allStepsForSaving || [];
+      const hasFinalAction = allSteps.some(step => {
+        const d = (step.description || '').toLowerCase();
+        return d.includes('create') || d.includes('submit') || d.includes('save') || 
+               d.includes('confirm') || d.includes('finish') || d.includes('done');
+      });
+      if (hasFinalAction) {
+        console.log('GuideMe: Auto-complete - "how to" task reached final action');
+        return true;
+      }
+    }
+    
+    // Rule 4: For informational tasks, complete after fewer steps
+    const isInformational = /^(where|what|find|show|explain|look for)/i.test(task);
+    if (isInformational && this.totalStepsCompleted >= 5) {
+      console.log('GuideMe: Auto-complete triggered - informational task with 5+ steps');
+      return true;
+    }
+    
+    // Rule 5: If we're on a step that contains a button name matching the task
+    // e.g., task "create a repository" and step "Click Create repository button"
+    const taskWords = task.split(/\s+/).filter(w => w.length > 3);
+    if (completedStep) {
+      const desc = (completedStep.description || '').toLowerCase();
+      const matchCount = taskWords.filter(word => desc.includes(word)).length;
+      // If 2+ task words appear in the step description AND it's an action, probably done
+      if (matchCount >= 2 && (desc.includes('click') || desc.includes('press') || desc.includes('select'))) {
+        console.log('GuideMe: Auto-complete - task matches step action');
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
   async requestContinuation() {
+    // Track continuation calls - if too many, force completion
+    this.continuationCount = (this.continuationCount || 0) + 1;
+    if (this.continuationCount >= 5) {
+      console.log('GuideMe: Force completing - too many continuation requests');
+      this.showFinalCompletion();
+      return;
+    }
+    
     // Mark this as a multi-page task since we're continuing
     this.isMultiPageTask = true;
     
@@ -1485,36 +1894,21 @@ class GuideMeContent {
         return;
       }
 
-      // Check if AI says we're truly done
-      if (response.completed === true) {
-        console.log('GuideMe: Task marked as completed by AI');
-        this.showFinalCompletion();
-        return;
-      }
-
-      // More steps available!
+      // IMPORTANT: Check for steps FIRST before checking completed flag
+      // AI might return completed: true WITH final steps - we need to show those steps!
       if (response.steps && response.steps.length > 0) {
         console.log('GuideMe: Got', response.steps.length, 'more steps');
         this.currentSteps = response.steps;
         this.currentStepIndex = 0;
         
-        // Add new steps to allStepsForSaving for auto-save
-        if (this.allStepsForSaving) {
-          response.steps.forEach(step => {
-            // Avoid duplicates by checking descriptions
-            const exists = this.allStepsForSaving.some(
-              s => s.description === step.description
-            );
-            if (!exists) {
-              this.allStepsForSaving.push({
-                description: step.description,
-                action: step.action || 'click',
-                element: step.element || 'body'
-              });
-            }
-          });
-          console.log('GuideMe: Total steps for saving:', this.allStepsForSaving.length);
-        }
+        // If AI marked this as the final batch, remember that
+        this.isFinalStepBatch = response.completed === true;
+        console.log('GuideMe: Is final step batch:', this.isFinalStepBatch);
+        
+        // NOTE: Do NOT pre-add steps to allStepsForSaving here!
+        // Steps should ONLY be added when user completes them (in trackStepCompletion/nextStep)
+        // This ensures we capture actual DOM selectors, not just gm-* IDs
+        console.log('GuideMe: Current allStepsForSaving count:', (this.allStepsForSaving || []).length);
         
         // Ensure panel exists before updating
         if (!this.controlPanel || !document.body.contains(this.controlPanel)) {
@@ -1532,8 +1926,12 @@ class GuideMeContent {
           hint.textContent = `📍 ${response.progress}`;
           hint.style.display = 'block';
         }
+      } else if (response.completed === true) {
+        // No steps AND marked complete - truly done
+        console.log('GuideMe: Task marked as completed by AI (no more steps)');
+        this.showFinalCompletion();
       } else {
-        // No more steps and not marked complete - task might be done
+        // No more steps and not marked complete - assume done
         console.log('GuideMe: No more steps available, assuming complete');
         this.showFinalCompletion();
       }
@@ -1562,6 +1960,9 @@ class GuideMeContent {
   }
 
   async showFinalCompletion() {
+    console.log('GuideMe: ===== showFinalCompletion CALLED =====');
+    console.log('GuideMe: allStepsForSaving count:', (this.allStepsForSaving || []).length);
+    
     // IMMEDIATELY clear all saved state to prevent re-activation on back navigation
     this.isGuideActive = false;
     await this.clearGuideState();
@@ -1573,8 +1974,8 @@ class GuideMeContent {
     // Auto-save the guide if enabled
     await this.autoSaveGuideIfEnabled();
     
-    // Show success with stats
-    const totalSteps = this.totalStepsCompleted + this.currentStepIndex + 1;
+    // Show success with stats - use allStepsForSaving which has accurate count
+    const totalSteps = (this.allStepsForSaving || []).length;
     if (this.controlPanel) {
       this.controlPanel.querySelector('.guideme-step-number').textContent = '✅ Complete!';
       this.controlPanel.querySelector('.guideme-instruction').textContent = '🎉 You made it!';
@@ -1608,6 +2009,17 @@ class GuideMeContent {
       // Use allStepsForSaving which has the complete journey
       const stepsToSave = this.allStepsForSaving || [];
       
+      console.log('GuideMe: ========== AUTO-SAVE DEBUG ==========');
+      console.log('GuideMe: Total steps to save:', stepsToSave.length);
+      stepsToSave.forEach((step, i) => {
+        console.log(`GuideMe: Step ${i + 1}:`, {
+          desc: step.description?.substring(0, 40),
+          hasRobustSelectors: !!step.robustSelectors,
+          selectorKeys: step.robustSelectors ? Object.keys(step.robustSelectors) : []
+        });
+      });
+      console.log('GuideMe: =====================================');
+      
       if (stepsToSave.length === 0) {
         console.log('GuideMe: No steps to save');
         return;
@@ -1617,7 +2029,7 @@ class GuideMeContent {
       const guideName = this.originalTask.substring(0, 50) + (this.originalTask.length > 50 ? '...' : '');
       
       // Save via background script
-      await chrome.runtime.sendMessage({
+      const saveResponse = await chrome.runtime.sendMessage({
         type: 'SAVE_MACRO',
         payload: {
           name: guideName,
@@ -1627,9 +2039,13 @@ class GuideMeContent {
         }
       });
       
-      console.log('GuideMe: Guide auto-saved with', stepsToSave.length, 'steps');
+      console.log('GuideMe: ✅ Guide auto-saved!', {
+        name: guideName,
+        steps: stepsToSave.length,
+        response: saveResponse
+      });
     } catch (error) {
-      console.error('GuideMe: Auto-save failed:', error);
+      console.error('GuideMe: ❌ Auto-save failed:', error);
     }
   }
 
@@ -1655,13 +2071,23 @@ class GuideMeContent {
     }
 
     const step = this.currentSteps[stepIndex];
-    const selector = step.element || step.selector;
+    const selector = step.element || step.selector || step.originalElement;
     const description = step.description || step.instruction || '';
+    const robustSelectors = step.robustSelectors || null;
     
-    console.log(`GuideMe: Highlighting step ${stepIndex + 1}: ${description.substring(0, 50)}...`);
+    console.log(`GuideMe: ========== HIGHLIGHTING STEP ${stepIndex + 1}/${this.currentSteps.length} ==========`);
+    console.log(`GuideMe: Description: ${description.substring(0, 80)}...`);
+    console.log('GuideMe: Selector/Element:', selector);
+    console.log('GuideMe: Has robustSelectors:', !!robustSelectors);
+    if (robustSelectors) {
+      console.log('GuideMe: robustSelectors keys:', Object.keys(robustSelectors));
+      console.log('GuideMe: robustSelectors.textContent:', robustSelectors.textContent);
+      console.log('GuideMe: robustSelectors.tagName:', robustSelectors.tagName);
+      console.log('GuideMe: robustSelectors.cssSelector:', robustSelectors.cssSelector);
+    }
     
-    // Use both selector AND description for better element finding
-    const element = this.findElement(selector, description);
+    // Use both selector AND description AND robust selectors for better element finding
+    const element = this.findElement(selector, description, robustSelectors);
 
     if (!element) {
       // Retry up to 3 times with increasing delays (for page load timing)
@@ -2018,10 +2444,22 @@ class GuideMeContent {
     );
   }
 
-  findElement(selector, text) {
+  findElement(selector, text, robustSelectors = null) {
     console.log('GuideMe: ========== FINDING ELEMENT ==========');
     console.log('GuideMe: Element ID/selector:', selector);
     console.log('GuideMe: Description:', text?.substring(0, 60));
+    if (robustSelectors) {
+      console.log('GuideMe: Has robust selectors:', Object.keys(robustSelectors));
+    }
+    
+    // STRATEGY 0: Use robust selectors if available (for saved guide replay)
+    if (robustSelectors) {
+      const found = this.findByRobustSelectors(robustSelectors);
+      if (found) {
+        console.log('GuideMe: ✓ Found by robust selectors');
+        return found;
+      }
+    }
     
     // STRATEGY 1: Find by GuideMe ID (most reliable for live guides)
     // The selector should be the element ID like "gm-15"
@@ -2073,6 +2511,209 @@ class GuideMeContent {
     return null;
   }
 
+  // Find element using robust selectors (multiple fallback strategies)
+  findByRobustSelectors(selectors) {
+    console.log('GuideMe: findByRobustSelectors called with:', JSON.stringify(selectors, null, 2));
+    console.log('GuideMe: Looking for textContent:', selectors.textContent);
+    console.log('GuideMe: Looking for tagName:', selectors.tagName);
+    
+    // Priority 1: data-testid (most stable)
+    if (selectors.dataTestId) {
+      const el = document.querySelector(`[data-testid="${selectors.dataTestId}"]`) ||
+                 document.querySelector(`[data-test-id="${selectors.dataTestId}"]`);
+      if (el && this.isVisible(el)) {
+        console.log('GuideMe: Found by data-testid');
+        return el;
+      }
+    }
+    
+    // Priority 2: aria-label (semantic, usually stable)
+    if (selectors.ariaLabel) {
+      const el = document.querySelector(`[aria-label="${selectors.ariaLabel}"]`);
+      if (el && this.isVisible(el)) {
+        console.log('GuideMe: Found by aria-label');
+        return el;
+      }
+    }
+    
+    // Priority 3: ID (if not dynamic)
+    if (selectors.id) {
+      const el = document.getElementById(selectors.id);
+      if (el && this.isVisible(el)) {
+        console.log('GuideMe: Found by ID');
+        return el;
+      }
+    }
+    
+    // Priority 4: name attribute
+    if (selectors.name) {
+      const el = document.querySelector(`[name="${selectors.name}"]`);
+      if (el && this.isVisible(el)) {
+        console.log('GuideMe: Found by name');
+        return el;
+      }
+    }
+    
+    // Priority 5: Text content + tag match (BEFORE generic CSS selector!)
+    // This is more reliable than CSS selectors for links/buttons with text
+    if (selectors.textContent && selectors.tagName) {
+      const el = this.findByTextAndTag(selectors.textContent, selectors.tagName);
+      if (el) {
+        console.log('GuideMe: Found by text + tag:', selectors.textContent);
+        return el;
+      }
+    }
+    
+    // Priority 6: Just text content
+    if (selectors.textContent) {
+      const el = this.findByExactText(selectors.textContent);
+      if (el) {
+        console.log('GuideMe: Found by exact text:', selectors.textContent);
+        return el;
+      }
+    }
+    
+    // Priority 7: CSS selector WITH text verification
+    // Only use CSS if we can verify the text matches (to avoid matching wrong element)
+    if (selectors.cssSelector) {
+      try {
+        const el = document.querySelector(selectors.cssSelector);
+        if (el && this.isVisible(el)) {
+          // If we have textContent, verify it matches before returning
+          if (selectors.textContent) {
+            const elText = this.getElementText(el).toLowerCase().trim();
+            const expectedText = selectors.textContent.toLowerCase().trim();
+            if (elText === expectedText || elText.includes(expectedText) || expectedText.includes(elText)) {
+              console.log('GuideMe: Found by CSS (text verified):', selectors.cssSelector);
+              return el;
+            } else {
+              console.log('GuideMe: CSS matched but text mismatch:', elText, 'vs', expectedText);
+              // Don't return - try other methods
+            }
+          } else {
+            // No text to verify, use CSS match
+            console.log('GuideMe: Found by CSS:', selectors.cssSelector);
+            return el;
+          }
+        }
+      } catch (e) {
+        console.log('GuideMe: CSS selector error:', e.message);
+      }
+    }
+    
+    // Priority 8: Keywords from description
+    if (selectors.keywords && selectors.keywords.length > 0) {
+      const el = this.findByKeywords(selectors.keywords);
+      if (el) {
+        console.log('GuideMe: Found by keywords');
+        return el;
+      }
+    }
+    
+    // Priority 9: Try to extract keywords from description (for legacy guides)
+    if (selectors.description) {
+      const extractedKeywords = this.extractKeywordsFromDescription(selectors.description);
+      if (extractedKeywords.length > 0) {
+        const el = this.findByKeywords(extractedKeywords);
+        if (el) {
+          console.log('GuideMe: Found by extracted keywords');
+          return el;
+        }
+      }
+    }
+    
+    // Priority 10: Use textContent as keywords (last fallback)
+    // This handles cases where exact text match failed but keyword matching might work
+    if (selectors.textContent) {
+      const textKeywords = this.extractKeywords(selectors.textContent);
+      console.log('GuideMe: Falling back to textContent as keywords:', textKeywords);
+      if (textKeywords.length > 0) {
+        const el = this.findByKeywords(textKeywords);
+        if (el) {
+          console.log('GuideMe: Found by textContent keywords');
+          return el;
+        }
+      }
+    }
+    
+    console.log('GuideMe: No element found by robust selectors');
+    return null;
+  }
+  
+  // Extract keywords from step description for text-based matching
+  extractKeywordsFromDescription(description) {
+    if (!description) return [];
+    
+    // Extract quoted text first (most specific) - like 'Create repository', "Submit"
+    const quoted = description.match(/'([^']+)'|"([^"]+)"/g);
+    if (quoted) {
+      return quoted.map(q => q.replace(/['\"]/g, '').toLowerCase());
+    }
+    
+    // Extract meaningful words (skip common words)
+    const stopWords = ['the', 'a', 'an', 'to', 'in', 'on', 'for', 'of', 'and', 'or', 'is', 'it', 'this', 'that', 'you', 'your', 'click', 'enter', 'select', 'choose', 'find', 'go', 'once', 'have', 'filled', 'field', 'button'];
+    const words = description.toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 3 && !stopWords.includes(w));
+    
+    return [...new Set(words)].slice(0, 5);
+  }
+
+  findByTextAndTag(text, tagName) {
+    const normalizedText = text.toLowerCase().trim();
+    const elements = document.querySelectorAll(tagName);
+    
+    console.log('GuideMe: findByTextAndTag searching for:', `"${normalizedText}"`, 'in', elements.length, tagName, 'elements');
+    
+    let exactMatch = null;
+    let containsMatch = null;
+    let allCandidates = []; // Debug: track all potential matches
+    
+    for (const el of elements) {
+      if (!this.isVisible(el)) continue;
+      const elText = this.getElementText(el).toLowerCase().trim();
+      
+      // Track elements with any text similarity for debugging
+      if (elText.includes(normalizedText) || normalizedText.includes(elText) || 
+          elText.split(/\s+/).some(w => normalizedText.includes(w))) {
+        allCandidates.push({ text: elText, tag: el.tagName, href: el.href || '' });
+      }
+      
+      // Priority 1: Exact match (strongest)
+      if (elText === normalizedText) {
+        console.log('GuideMe: findByTextAndTag EXACT match:', `"${elText}"`);
+        return el; // Return immediately on exact match
+      }
+      
+      // Priority 2: Element text equals target (for cases like "Genkit" matching <a>Genkit</a>)
+      // This handles whitespace/formatting differences
+      if (elText.replace(/\s+/g, '') === normalizedText.replace(/\s+/g, '')) {
+        console.log('GuideMe: findByTextAndTag whitespace-normalized match:', `"${elText}"`);
+        exactMatch = el;
+      }
+      
+      // Priority 3: Contains match - but prefer shorter elements (more specific)
+      if (!exactMatch && !containsMatch) {
+        if (elText.includes(normalizedText) || normalizedText.includes(elText)) {
+          // Only accept if lengths are similar (to avoid matching container elements)
+          const lengthRatio = Math.min(elText.length, normalizedText.length) / Math.max(elText.length, normalizedText.length);
+          if (lengthRatio > 0.5) { // At least 50% length similarity
+            console.log('GuideMe: findByTextAndTag contains match:', `"${elText}"`, 'ratio:', lengthRatio.toFixed(2));
+            containsMatch = el;
+          }
+        }
+      }
+    }
+    
+    // Debug: show all candidates we considered
+    if (allCandidates.length > 0) {
+      console.log('GuideMe: findByTextAndTag candidates:', allCandidates.slice(0, 5));
+    }
+    
+    return exactMatch || containsMatch || null;
+  }
+
   extractKeywords(text) {
     if (!text) return [];
     const stopWords = ['the', 'a', 'an', 'to', 'on', 'in', 'for', 'or', 'and', 'click', 'button', 'link', 'tab', 'option', 'select', 'your', 'this', 'that', 'then', 'will', 'can', 'should'];
@@ -2084,11 +2725,19 @@ class GuideMeContent {
   }
 
   findByKeywords(keywords) {
-    // Search elements with data-guideme-id (elements we know about)
-    const elements = document.querySelectorAll('[data-guideme-id]');
+    // First try elements with data-guideme-id (current session elements)
+    let elements = document.querySelectorAll('[data-guideme-id]');
+    
+    // If no guideme elements (e.g., imported guide replay), search all clickable elements
+    if (elements.length === 0) {
+      elements = document.querySelectorAll('a, button, input, select, [role="button"], [role="link"], [role="menuitem"], [onclick], [data-action]');
+    }
+    
+    console.log('GuideMe: findByKeywords searching', elements.length, 'elements for keywords:', keywords);
     
     let bestMatch = null;
     let bestScore = 0;
+    let allCandidates = []; // For debugging
     
     for (const el of elements) {
       if (!this.isVisible(el)) continue;
@@ -2100,10 +2749,15 @@ class GuideMeContent {
       let matchedKeywords = [];
       
       for (const kw of keywords) {
-        // Exact word match
+        // Exact word match - HIGHEST priority
         if (elWords.includes(kw)) {
-          score += 25;
+          score += 30; // Increased from 25
           matchedKeywords.push(kw);
+        }
+        // Full text contains keyword as word
+        else if (elText.includes(kw + ' ') || elText.includes(' ' + kw) || elText === kw || elText.startsWith(kw) || elText.endsWith(kw)) {
+          score += 25;
+          matchedKeywords.push('[' + kw + ']');
         }
         // Word contains keyword
         else if (elWords.some(w => w.includes(kw) && kw.length > 3)) {
@@ -2122,15 +2776,35 @@ class GuideMeContent {
         score += matchedKeywords.length * 10;
       }
       
+      // Strong bonus for SHORT text that matches well (more likely to be a button, not container)
+      if (elText.length <= 30 && score > 0) {
+        score += 15;
+      }
+      
       // Penalty for very long text (probably a container, not a button)
       if (elText.length > 50) {
         score -= 10;
+      }
+      if (elText.length > 100) {
+        score -= 20; // Extra penalty for very long text
+      }
+      
+      if (score > 0) {
+        allCandidates.push({ el, text: elText.substring(0, 50), score, matchedKeywords });
       }
       
       if (score > bestScore && score >= 20) {
         bestScore = score;
         bestMatch = el;
       }
+    }
+    
+    // Log top candidates for debugging
+    allCandidates.sort((a, b) => b.score - a.score);
+    console.log('GuideMe: findByKeywords top candidates:', allCandidates.slice(0, 5).map(c => ({ text: c.text, score: c.score, matched: c.matchedKeywords })));
+    
+    if (bestMatch) {
+      console.log('GuideMe: findByKeywords best match:', this.getElementText(bestMatch).substring(0, 50), 'score:', bestScore);
     }
     
     return bestMatch;
@@ -2249,6 +2923,9 @@ class GuideMeContent {
   findByExactText(searchText) {
     if (!searchText || searchText.length < 2) return null;
     const lower = searchText.toLowerCase().trim();
+    const normalized = lower.replace(/\s+/g, ' '); // Normalize multiple whitespace to single space
+    
+    console.log('GuideMe: findByExactText searching for:', lower);
     
     // Search all interactive elements first (higher priority)
     const interactiveElements = document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="option"], li a, li button');
@@ -2258,9 +2935,10 @@ class GuideMeContent {
       if (!this.isVisible(el)) continue;
       
       const elText = this.getElementText(el).toLowerCase().trim();
+      const elNormalized = elText.replace(/\s+/g, ' ');
       
       // Exact match (case insensitive)
-      if (elText === lower) {
+      if (elText === lower || elNormalized === normalized) {
         console.log('GuideMe: EXACT match found! Looking for:', lower, '-> Found:', elText);
         return el;
       }
