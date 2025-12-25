@@ -197,7 +197,7 @@ class GuideMeContent {
           if (!guideState || (backupState.savedAt > (guideState.savedAt || 0))) {
             guideState = backupState;
           }
-          // Clear the backup after reading
+          // DON'T clear the backup immediately - keep it for reliability
           localStorage.removeItem('guideme_backup');
         }
       } catch (e) {}
@@ -209,12 +209,12 @@ class GuideMeContent {
         return;
       }
       
-      // Check if state is expired (older than 1 minute - reduced from 2)
+      // Check if state is expired (5 minutes for complex multi-page tasks)
       const stateAge = Date.now() - (guideState.savedAt || 0);
-      const MAX_AGE = 1 * 60 * 1000; // 1 minute - shorter timeout
+      const MAX_AGE = 5 * 60 * 1000; // 5 minutes - allow time for complex multi-page workflows
       
       if (stateAge > MAX_AGE) {
-        console.log('GuideMe: Saved state expired, clearing...');
+        console.log('GuideMe: Saved state expired after 5 minutes, clearing...');
         this.clearGuideState();
         return;
       }
@@ -241,6 +241,7 @@ class GuideMeContent {
       console.log('GuideMe: Found saved guide task:', guideState.task);
       console.log('GuideMe: Remaining steps:', guideState.remainingSteps?.length || 0);
       console.log('GuideMe: Restored allStepsForSaving:', guideState.allStepsForSaving?.length || 0);
+      console.log('GuideMe: Restored continuationCount:', guideState.continuationCount || 0);
       
       this.originalTask = guideState.task;
       this.highlightColor = guideState.highlightColor || '#4F46E5';
@@ -248,6 +249,11 @@ class GuideMeContent {
       this.isSavedGuideReplay = guideState.isSavedGuideReplay || false;
       this.allStepsForSaving = guideState.allStepsForSaving || [];
       this.visitedUrls = guideState.visitedUrls || [];
+      
+      // IMPORTANT: Restore multi-page tracking state
+      this.totalStepsCompleted = guideState.totalStepsCompleted || (this.allStepsForSaving?.length || 0);
+      this.continuationCount = guideState.continuationCount || 0;
+      this.isMultiPageTask = guideState.isMultiPageTask || false;
       
       // Mark current URL as visited
       this.markUrlVisited(window.location.href);
@@ -266,7 +272,8 @@ class GuideMeContent {
         this.saveGuideState();
       } else if (!this.isSavedGuideReplay) {
         // Live guide needs AI - but only if forward navigation
-        console.log('GuideMe: Requesting AI for new page...');
+        console.log('GuideMe: Requesting AI for new page (continuation:', this.continuationCount, ')');
+        this.isMultiPageTask = true; // Mark as multi-page since we're continuing
         this.requestGuideContinuation();
       } else {
         // Saved guide with no remaining steps = complete
@@ -357,6 +364,10 @@ class GuideMeContent {
     // Mark current URL as visited
     this.markUrlVisited(window.location.href);
     
+    // Track total steps completed for multi-page progress
+    // This should count all steps done across all pages
+    const totalCompleted = (this.allStepsForSaving || []).length;
+    
     // Save state immediately for potential navigation
     const guideState = {
       task: this.originalTask,
@@ -368,10 +379,13 @@ class GuideMeContent {
       remainingSteps: remainingSteps,
       isSavedGuideReplay: this.isSavedGuideReplay,
       allStepsForSaving: this.allStepsForSaving || [],
-      visitedUrls: this.visitedUrls || []
+      visitedUrls: this.visitedUrls || [],
+      totalStepsCompleted: totalCompleted, // Track multi-page progress
+      continuationCount: this.continuationCount || 0, // Preserve continuation count
+      isMultiPageTask: this.isMultiPageTask || false
     };
     
-    console.log('GuideMe: saveStateForNavigation - allStepsForSaving:', (this.allStepsForSaving || []).length);
+    console.log('GuideMe: saveStateForNavigation - total steps:', totalCompleted, 'continuations:', this.continuationCount);
     
     // Save to BOTH storages for maximum reliability
     // chrome.storage.local is shared across tabs, localStorage is per-origin
@@ -1789,9 +1803,22 @@ class GuideMeContent {
   shouldAutoComplete() {
     const task = (this.originalTask || '').toLowerCase();
     
-    // Rule 1: If we've done 12+ steps total, time to stop (reduced from 15)
-    if (this.totalStepsCompleted >= 12) {
-      console.log('GuideMe: Auto-complete triggered - 12+ steps completed');
+    // IMPORTANT: Multi-page tasks like "pull request", "fork", "merge" need MORE steps
+    const isComplexMultiPageTask = (
+      task.includes('pull request') || task.includes('pr ') || 
+      task.includes('fork') || task.includes('merge') ||
+      task.includes('branch') || task.includes('compare') ||
+      task.includes('contribute') || task.includes('upstream')
+    );
+    
+    // For complex multi-page tasks, be MUCH less aggressive about auto-completing
+    const minStepsForComplex = 8;
+    const minStepsForSimple = 5;
+    
+    // Rule 1: If we've done many steps, consider completion (but higher threshold for complex tasks)
+    const maxSteps = isComplexMultiPageTask ? 20 : 15;
+    if (this.totalStepsCompleted >= maxSteps) {
+      console.log('GuideMe: Auto-complete triggered - max steps reached:', this.totalStepsCompleted);
       return true;
     }
     
@@ -1801,33 +1828,39 @@ class GuideMeContent {
       const desc = (completedStep.description || '').toLowerCase();
       
       // Strong completion keywords - these DEFINITELY end the guide
+      // BUT for multi-page tasks, require being on a confirmation/success page
       const strongCompletionWords = [
+        'create pull request', 'submit pull request', 'open pull request',
+        'merge pull request', 'confirm merge',
         'create repository', 'create repo', 'create project', 'create account',
         'submit form', 'submit request', 'save changes', 'save settings',
-        'confirm', 'finish setup', 'complete registration', 'sign up',
-        'create the', 'submit the', 'publish', 'send message', 'post comment',
-        'click create', 'click submit', 'click save', 'click confirm',
-        'press create', 'press submit', 'click the create', 'click the submit'
+        'finish setup', 'complete registration', 'sign up',
+        'publish', 'send message', 'post comment'
       ];
       
+      // For complex tasks, only auto-complete on STRONG matches AND enough steps
       if (strongCompletionWords.some(phrase => desc.includes(phrase))) {
+        if (isComplexMultiPageTask && this.totalStepsCompleted < minStepsForComplex) {
+          console.log('GuideMe: Complex task - not auto-completing yet, only', this.totalStepsCompleted, 'steps');
+          return false;
+        }
         console.log('GuideMe: Auto-complete - strong completion action:', desc.substring(0, 60));
         return true;
       }
       
-      // Medium completion keywords - end if we have enough steps
-      const mediumCompletionWords = ['create', 'submit', 'save', 'done', 'finish', 'complete', 'confirm', 'publish', 'send', 'post'];
-      if (this.totalStepsCompleted >= 5 && mediumCompletionWords.some(kw => desc.includes(kw))) {
-        console.log('GuideMe: Auto-complete - completion action with 5+ steps:', desc.substring(0, 50));
-        return true;
+      // Medium completion keywords - only for simple tasks with enough steps
+      if (!isComplexMultiPageTask) {
+        const mediumCompletionWords = ['create', 'submit', 'save', 'done', 'finish', 'complete', 'confirm', 'publish', 'send', 'post'];
+        if (this.totalStepsCompleted >= minStepsForSimple && mediumCompletionWords.some(kw => desc.includes(kw))) {
+          console.log('GuideMe: Auto-complete - completion action with', this.totalStepsCompleted, 'steps');
+          return true;
+        }
       }
     }
     
-    // Rule 3: Check if task was asking "how to" do something
-    // If we've shown them the form/page AND pointed to the final button, we're done
+    // Rule 3: For "how to" tasks (NOT complex multi-page ones), complete after showing the form
     const isHowToTask = /^(how|show me how|help me|i want to|i need to)/i.test(task);
-    if (isHowToTask && this.totalStepsCompleted >= 4) {
-      // Check if any completed step had a final action word
+    if (isHowToTask && !isComplexMultiPageTask && this.totalStepsCompleted >= 4) {
       const allSteps = this.allStepsForSaving || [];
       const hasFinalAction = allSteps.some(step => {
         const d = (step.description || '').toLowerCase();
@@ -1840,23 +1873,25 @@ class GuideMeContent {
       }
     }
     
-    // Rule 4: For informational tasks, complete after fewer steps
-    const isInformational = /^(where|what|find|show|explain|look for)/i.test(task);
+    // Rule 4: For informational tasks only (not action tasks)
+    const isInformational = /^(where is|what is|find|show me where|explain|look for)/i.test(task);
     if (isInformational && this.totalStepsCompleted >= 5) {
       console.log('GuideMe: Auto-complete triggered - informational task with 5+ steps');
       return true;
     }
     
-    // Rule 5: If we're on a step that contains a button name matching the task
-    // e.g., task "create a repository" and step "Click Create repository button"
-    const taskWords = task.split(/\s+/).filter(w => w.length > 3);
-    if (completedStep) {
-      const desc = (completedStep.description || '').toLowerCase();
-      const matchCount = taskWords.filter(word => desc.includes(word)).length;
-      // If 2+ task words appear in the step description AND it's an action, probably done
-      if (matchCount >= 2 && (desc.includes('click') || desc.includes('press') || desc.includes('select'))) {
-        console.log('GuideMe: Auto-complete - task matches step action');
-        return true;
+    // Rule 5: DISABLED for complex tasks - was causing premature completion
+    // Only use this for very simple single-page tasks
+    if (!isComplexMultiPageTask && this.totalStepsCompleted >= 3) {
+      const taskWords = task.split(/\s+/).filter(w => w.length > 3);
+      if (completedStep) {
+        const desc = (completedStep.description || '').toLowerCase();
+        const matchCount = taskWords.filter(word => desc.includes(word)).length;
+        // If 3+ task words appear AND it's a final action
+        if (matchCount >= 3 && (desc.includes('click create') || desc.includes('click submit') || desc.includes('click confirm'))) {
+          console.log('GuideMe: Auto-complete - strong task match in step');
+          return true;
+        }
       }
     }
     
@@ -1864,13 +1899,20 @@ class GuideMeContent {
   }
 
   async requestContinuation() {
-    // Track continuation calls - if too many, force completion
+    // Track continuation calls - allow more for complex multi-page tasks
     this.continuationCount = (this.continuationCount || 0) + 1;
-    if (this.continuationCount >= 5) {
-      console.log('GuideMe: Force completing - too many continuation requests');
+    const task = (this.originalTask || '').toLowerCase();
+    const isComplexTask = task.includes('pull request') || task.includes('fork') || 
+                          task.includes('contribute') || task.includes('pr ');
+    const maxContinuations = isComplexTask ? 12 : 8;
+    
+    if (this.continuationCount >= maxContinuations) {
+      console.log('GuideMe: Force completing - too many continuation requests (' + this.continuationCount + ')');
       this.showFinalCompletion();
       return;
     }
+    
+    console.log('GuideMe: Continuation request', this.continuationCount, 'of', maxContinuations);
     
     // Mark this as a multi-page task since we're continuing
     this.isMultiPageTask = true;
@@ -2101,6 +2143,19 @@ class GuideMeContent {
     console.log(`GuideMe: Description: ${description.substring(0, 80)}...`);
     console.log('GuideMe: Selector/Element:', selector);
     console.log('GuideMe: Has robustSelectors:', !!robustSelectors);
+    
+    // Check if page might still be loading
+    const context = this.detectPageContext();
+    if (context.isLoading && retryCount < 2) {
+      console.log('GuideMe: Page appears to be loading, waiting...');
+      this.pendingRetry = setTimeout(() => {
+        if (stepIndex === this.currentStepIndex) {
+          this.highlightStep(stepIndex, retryCount + 1);
+        }
+      }, 1000);
+      return;
+    }
+    
     if (robustSelectors) {
       console.log('GuideMe: robustSelectors keys:', Object.keys(robustSelectors));
       console.log('GuideMe: robustSelectors.textContent:', robustSelectors.textContent);
@@ -2284,7 +2339,8 @@ class GuideMeContent {
     const data = {
       url: window.location.href,
       title: document.title,
-      elements: []
+      elements: [],
+      pageContext: this.detectPageContext() // Add page context for better AI understanding
     };
 
     let elementIndex = 0;
@@ -2310,11 +2366,16 @@ class GuideMeContent {
       else if (el.tagName === 'SELECT') elType = 'dropdown';
       else if (el.getAttribute('role') === 'menuitem') elType = 'menu-item';
       else if (el.getAttribute('role') === 'tab') elType = 'tab';
+      else if (el.getAttribute('role') === 'option') elType = 'option';
+      else if (el.getAttribute('role') === 'checkbox') elType = 'checkbox';
+      else if (el.getAttribute('role') === 'switch') elType = 'toggle';
       
       // Detect if it's a dropdown/expandable button
       const hasDropdownIndicator = el.querySelector('svg, .dropdown-caret, .octicon-triangle-down') ||
                                    el.getAttribute('aria-expanded') !== null ||
-                                   el.getAttribute('aria-haspopup') !== null;
+                                   el.getAttribute('aria-haspopup') !== null ||
+                                   el.classList.contains('dropdown-toggle') ||
+                                   el.closest('[data-toggle="dropdown"]');
       
       // Detect visual prominence (primary action buttons)
       const style = window.getComputedStyle(el);
@@ -2323,12 +2384,24 @@ class GuideMeContent {
                        !bgColor.includes('transparent') &&
                        !bgColor.includes('rgb(255, 255, 255)');
       
+      // Detect if in a modal/dialog (important for AWS, Stripe, etc.)
+      const isInModal = el.closest('[role="dialog"], [role="alertdialog"], .modal, .dialog, [aria-modal="true"], .overlay');
+      
       // Build context hints
       let hints = [];
       if (hasDropdownIndicator) hints.push('dropdown');
       if (isPrimary && elType === 'button') hints.push('primary-action');
       if (el.closest('nav, [role="navigation"], [role="tablist"]')) hints.push('navigation');
       if (el.closest('form')) hints.push('form');
+      if (isInModal) hints.push('in-modal');
+      if (el.getAttribute('data-testid')) hints.push('testid:' + el.getAttribute('data-testid'));
+      
+      // Detect AWS-specific patterns
+      if (el.closest('[class*="awsui"]')) hints.push('aws-ui');
+      // Detect Figma patterns
+      if (el.closest('[class*="figma"]')) hints.push('figma-ui');
+      // Detect Stripe patterns
+      if (el.closest('[class*="Stripe"], [class*="stripe"]')) hints.push('stripe-ui');
       
       // Get nearby context (what's this button near?)
       const parent = el.closest('div, section, header, aside, main');
@@ -2344,6 +2417,14 @@ class GuideMeContent {
         near: nearbyContext || null
       });
     };
+
+    // PRIORITY 0: Modal/Dialog elements (HIGHEST priority - they overlay everything)
+    document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, .dialog, [aria-modal="true"], .overlay-content, .popup-content').forEach(modal => {
+      if (!this.isVisible(modal)) return;
+      modal.querySelectorAll('button, a, [role="button"], input, select, [role="menuitem"], [role="option"]').forEach(el => {
+        addElement(el, 'modal');
+      });
+    });
 
     // 1. Header elements
     document.querySelectorAll('header, #masthead, [role="banner"]').forEach(header => {
@@ -2479,6 +2560,53 @@ class GuideMeContent {
     const classes = this.getRelevantClasses(el);
     if (classes) return `.${classes.split(' ')[0]}`;
     return el.tagName.toLowerCase();
+  }
+
+  // Detect page context for better AI understanding
+  detectPageContext() {
+    const url = window.location.href.toLowerCase();
+    const title = document.title.toLowerCase();
+    const bodyClasses = document.body.className.toLowerCase();
+    
+    const context = {
+      platform: 'unknown',
+      pageType: 'general',
+      hasModal: false,
+      hasDropdownOpen: false,
+      isLoading: false
+    };
+    
+    // Detect platform
+    if (url.includes('github.com')) context.platform = 'github';
+    else if (url.includes('aws.amazon.com') || url.includes('console.aws')) context.platform = 'aws';
+    else if (url.includes('figma.com')) context.platform = 'figma';
+    else if (url.includes('stripe.com') || url.includes('dashboard.stripe')) context.platform = 'stripe';
+    else if (url.includes('vercel.com')) context.platform = 'vercel';
+    else if (url.includes('notion.so') || url.includes('notion.site')) context.platform = 'notion';
+    else if (url.includes('slack.com')) context.platform = 'slack';
+    else if (url.includes('shopify.com') || url.includes('myshopify.com')) context.platform = 'shopify';
+    else if (url.includes('mailchimp.com')) context.platform = 'mailchimp';
+    else if (url.includes('analytics.google.com')) context.platform = 'google-analytics';
+    else if (url.includes('canva.com')) context.platform = 'canva';
+    
+    // Detect page type based on URL patterns
+    if (url.includes('/pull') || url.includes('/pulls')) context.pageType = 'pull-requests';
+    else if (url.includes('/compare')) context.pageType = 'compare';
+    else if (url.includes('/actions')) context.pageType = 'actions';
+    else if (url.includes('/settings')) context.pageType = 'settings';
+    else if (url.includes('/new') || url.includes('/create')) context.pageType = 'creation-form';
+    else if (url.includes('/edit')) context.pageType = 'edit-form';
+    
+    // Detect modal state
+    context.hasModal = !!document.querySelector('[role="dialog"]:not([aria-hidden="true"]), .modal.show, .modal.active, [aria-modal="true"]');
+    
+    // Detect open dropdowns
+    context.hasDropdownOpen = !!document.querySelector('[aria-expanded="true"], .dropdown.open, .dropdown-menu.show');
+    
+    // Detect loading states
+    context.isLoading = !!document.querySelector('.loading, .spinner, [aria-busy="true"], .skeleton');
+    
+    return context;
   }
 
   isVisible(el) {

@@ -237,53 +237,64 @@ class GuideMeBackground {
   buildContinuationSystemPrompt() {
     return `You are a website navigation assistant guiding a user through a task. After the user clicks something, you provide next steps.
 
+CRITICAL - MULTI-PAGE WORKFLOWS:
+Many tasks span multiple pages. Examples:
+- Creating a Pull Request from a Fork: fork repo → make changes → go to original repo → click "Pull requests" → click "New pull request" → select "compare across forks" → select your fork → create PR
+- Contributing to open source: fork → clone → branch → commit → push → create PR
+- Account setup: sign up → verify email → complete profile → configure settings
+
+DO NOT mark these as "completed" until the user reaches the FINAL destination!
+
 CRITICAL - WHEN TO MARK COMPLETED:
-Mark "completed": true when ANY of these conditions are met:
+Mark "completed": true ONLY when ALL of these are true:
 
-1. ✅ USER REACHED THE DESTINATION - They're now on the page/form they asked about
-   - Task: "how to create a repo" → User is on the repo creation page = DONE
-   - Task: "find billing settings" → User is viewing billing settings = DONE
+1. ✅ USER IS ON THE FINAL PAGE - The actual destination, not an intermediate page
+   - For "create PR from fork": User is on the "Open a pull request" form page
+   - For "create repo": User is on the repository creation form
+   - NOT complete if user is still navigating to get there!
 
-2. ✅ USER CAN NOW PERFORM THE ACTION - You've shown them the final button
-   - Task: "create a repository" → You highlighted the "Create repository" button = DONE
-   - DO NOT continue after showing the final action button
+2. ✅ THE FINAL ACTION IS VISIBLE - You've highlighted the submit/create button
+   - Task: "create pull request" → You highlighted "Create pull request" button = DONE
+   - BUT if still on "compare" page selecting branches = NOT DONE
 
-3. ✅ FORM IS VISIBLE - For "how to" tasks, showing the form IS the completion
-   - "How to create a new project" → Repository creation form is visible = DONE
-   - User asked HOW, not to actually create it
+3. ✅ FORM/DESTINATION IS READY - User can actually perform the action
+   - All required fields are visible
+   - The final button is clickable
 
-4. ✅ TOO MANY STEPS - If 5+ steps have been completed, strongly consider ending
-   - Most tasks can be done in 3-7 steps
-   - After 5 steps, set completed: true unless something is clearly missing
+COMMON MULTI-PAGE TASKS - DO NOT COMPLETE EARLY:
+- "Pull request from fork" - needs: navigate to original repo → Pull requests tab → New PR → Compare across forks → Select fork → Fill form → Create
+- "Fork and contribute" - needs: fork → make changes → create PR back to original
+- "Compare branches" - needs: navigate to compare page → select branches → view diff
 
-5. ✅ FINAL ACTION IN COMPLETED STEPS - Look at what was already done
-   - If completed steps include "Click Create" or "Click Submit" = DONE
-   - The user already did the final action!
-
-IMPORTANT: Users HATE infinite loops. When in doubt, END THE GUIDE.
+IMPORTANT: For pull request tasks:
+- If on a repo page but not the PR creation form yet = NOT COMPLETE
+- If on "Pull requests" tab but not "New pull request" = NOT COMPLETE  
+- If selecting branches/forks in compare view = NOT COMPLETE
+- Only complete when on the actual PR creation form with title/description fields
 
 OUTPUT FORMAT (JSON only):
 {
   "steps": [
-    {"elementId": "gm-5", "action": "click", "description": "Click 'Create' button to finish"}
+    {"elementId": "gm-5", "action": "click", "description": "Click 'Pull requests' tab to see PR options"}
   ],
-  "completed": true,
-  "reason": "User has reached the creation form and clicked Create",
-  "progress": "Complete"
+  "completed": false,
+  "reason": "User needs to navigate to PR creation form first",
+  "progress": "On repository page - need to go to Pull requests → New pull request"
 }
 
-If task is complete with no more steps needed:
+If task is truly complete with no more steps needed:
 {
   "steps": [],
   "completed": true,
-  "reason": "Task complete - user has reached the destination"
+  "reason": "User is on PR creation form and can fill in details and click Create"
 }
 
 RULES:
-- Maximum 3 steps per response
-- If showing a final action button, this MUST be the last step with completed: true
+- Maximum 4 steps per response (allow more for complex navigation)
+- If showing a final action button (Create PR, Submit, etc.), this MUST be the last step with completed: true
 - Use ONLY element IDs from the provided list
-- ALWAYS include "reason" explaining your decision`;
+- ALWAYS include "reason" explaining your decision
+- ALWAYS include "progress" to show where user is in the workflow`;
   }
 
   buildContinuationUserPrompt(task, completedSteps, url, title, dom) {
@@ -305,26 +316,54 @@ RULES:
     // Check if any completed step was a final action
     const hasFinalAction = completedSteps && completedSteps.some(s => {
       const d = (s.description || '').toLowerCase();
-      return d.includes('create') || d.includes('submit') || d.includes('save') || 
-             d.includes('confirm') || d.includes('finish');
+      return d.includes('create pull request') || d.includes('submit pull request') ||
+             d.includes('open pull request') || d.includes('merge');
     });
+    
+    // Detect if this is a multi-page workflow task
+    const taskLower = task.toLowerCase();
+    const isMultiPageTask = taskLower.includes('pull request') || taskLower.includes('fork') ||
+                           taskLower.includes('contribute') || taskLower.includes('pr ');
+
+    // Detect current page context for better guidance
+    const urlLower = url.toLowerCase();
+    const titleLower = title.toLowerCase();
+    let pageContext = '';
+    
+    if (urlLower.includes('/compare')) {
+      pageContext = '\n📍 CURRENT PAGE: Compare/diff view - user may need to select forks or branches';
+    } else if (urlLower.includes('/pull/new') || titleLower.includes('open a pull request')) {
+      pageContext = '\n📍 CURRENT PAGE: PR creation form - user is ready to create PR!';
+    } else if (urlLower.includes('/pulls') || titleLower.includes('pull requests')) {
+      pageContext = '\n📍 CURRENT PAGE: Pull requests list - user needs to click "New pull request"';
+    } else if (urlLower.includes('/fork')) {
+      pageContext = '\n📍 CURRENT PAGE: Fork page - after forking, user needs to navigate back';
+    }
 
     return `ORIGINAL TASK: "${task}"
+${isMultiPageTask ? '⚠️ THIS IS A MULTI-PAGE WORKFLOW - do NOT mark complete until on final form/page!' : ''}
 
 COMPLETED STEPS (${stepCount} total):
 ${completedDesc}
-${hasFinalAction ? '\n⚠️ NOTE: A FINAL ACTION (create/submit/save) WAS ALREADY COMPLETED - consider marking task as done!' : ''}
-${stepCount >= 5 ? '\n⚠️ NOTE: 5+ steps completed - strongly consider marking completed: true' : ''}
+${hasFinalAction ? '\n⚠️ NOTE: A FINAL PR ACTION WAS ALREADY COMPLETED - task is likely DONE!' : ''}
+${stepCount >= 10 ? '\n⚠️ NOTE: 10+ steps completed - verify if task is truly complete' : ''}
 
 NOW ON PAGE: ${title}
-URL: ${url}
+URL: ${url}${pageContext}
 PAGE CONTEXT: ${headings || 'Main page'}
 
 AVAILABLE ELEMENTS ON THIS PAGE:
 ${elementList}
 
-Analyze: Is the task "${task}" complete? If user is on the right page/form and can perform the action, set completed: true.
-If more steps needed, provide maximum 3 steps using element IDs from above.`;
+${isMultiPageTask ? `
+FOR PULL REQUEST TASKS:
+- If NOT on "Open a pull request" form yet → provide navigation steps, completed: false
+- If on compare page selecting branches → provide selection steps, completed: false
+- If on PR form with title/description → highlight "Create pull request" button, completed: true
+` : ''}
+
+Analyze: Is the task "${task}" complete? Consider the URL and page title.
+If more steps needed, provide maximum 4 steps using element IDs from above.`;
   }
 
   async generateGuide(payload) {
@@ -352,58 +391,64 @@ If more steps needed, provide maximum 3 steps using element IDs from above.`;
 INPUT: You receive a list of ACTUAL clickable elements with unique IDs (like "gm-5").
 OUTPUT: JSON with steps referencing these exact IDs.
 
-CRITICAL - YOU MUST ALWAYS PROVIDE AT LEAST ONE STEP:
-- Even for simple tasks, provide the first step to get started
-- NEVER return an empty steps array unless the task is literally impossible
-- If user asks "how to X", show them the FIRST element to click toward X
+CRITICAL - UNDERSTAND MULTI-PAGE WORKFLOWS:
+Many tasks require navigating through MULTIPLE pages. Common examples:
 
-CRITICAL - NEVER GIVE UP OR REDIRECT TO DOCS:
-- NEVER suggest "go to documentation" or "read the help" as a step
-- NEVER tell the user to search externally
-- Your job is to find the ACTUAL button/link on THIS page
-- If the exact button isn't visible, find the CLOSEST action (dropdown, menu, related button)
-- Think about what button MIGHT lead to the feature (e.g., "Code" button for cloning)
+1. "Create Pull Request from Fork":
+   - Step 1: Go to original repository (not your fork)
+   - Step 2: Click "Pull requests" tab
+   - Step 3: Click "New pull request" 
+   - Step 4: Click "compare across forks"
+   - Step 5: Select your fork as head repository
+   - Step 6: Fill in PR details
+   - Step 7: Click "Create pull request"
 
-CRITICAL - THINK ABOUT SYNONYMS AND RELATED UI:
-Common UI patterns to remember:
-- "Clone/Download" is often under a "Code" button (GitHub, GitLab)
-- "Settings" might be a gear icon or "..." menu
-- "Create new" might be a "+" button
-- Actions are often hidden in dropdown menus
-- Look for buttons that MIGHT contain the action when expanded
+2. "Fork a repository":
+   - Find and click "Fork" button
+   - Wait for fork creation page
+   - Optionally customize fork settings
+   - Click "Create fork"
 
-CRITICAL - PROVIDE ALL STEPS FOR THIS PAGE:
-- Include ALL steps that can be completed on the current page
-- If 3 buttons need clicking before navigation, include ALL 3 in one response
-- Only stop at steps that would cause page navigation (links to new pages)
+3. "Contribute to a project":
+   - Fork → Clone → Branch → Commit → Push → Create PR
 
-YOUR JOB ON THIS PAGE:
-1. Look at all clickable elements available
-2. Find element(s) that move toward the goal
-3. If exact match not found, find the NEAREST related element (dropdown, menu)
-4. Return steps for THIS page only
-5. Set willNavigate: true if any step causes navigation
-6. NEVER set completed: true unless user is LITERALLY at final destination
+CRITICAL - ALWAYS PROVIDE STEPS:
+- Even for complex tasks, provide the FIRST step to get started
+- NEVER return an empty steps array unless the task is impossible
+- If the exact button isn't visible, find the CLOSEST action that moves toward the goal
+
+CRITICAL - THINK ABOUT UI PATTERNS:
+Common GitHub UI patterns:
+- "Pull requests" is a TAB in the repository navigation
+- "New pull request" is a button on the Pull requests page
+- "Compare across forks" appears when comparing branches
+- "Fork" button is usually in the top-right of a repository
+- Dropdown menus ("Code", "...") hide additional options
+
+CRITICAL - FOR FORK/PR TASKS:
+- If user is on THEIR fork but wants to create PR to original: guide them to the ORIGINAL repo first
+- The "New pull request" workflow: original repo → Pull requests → New PR → compare across forks → select head fork → create
+- If user wants to PR FROM their fork TO original: they can also use their fork's "Contribute" dropdown
 
 OUTPUT FORMAT:
 {
   "steps": [
-    {"elementId": "gm-5", "action": "click", "description": "Click the 'Code' button to open clone options"}
+    {"elementId": "gm-5", "action": "click", "description": "Click 'Pull requests' tab to access PR options"}
   ],
   "canComplete": true,
   "completed": false,
-  "willNavigate": false,
-  "navigationHint": "This opens a dropdown with clone URLs"
+  "willNavigate": true,
+  "progress": "Step 1 of multi-page workflow: accessing Pull requests tab"
 }
 
 RULES:
 1. ONLY use element IDs from the provided list - never invent IDs
-2. DO NOT suggest using search boxes - guide through visual navigation
-3. Each step = ONE click action
-4. Be specific: say WHERE (header, sidebar) and WHAT text to click
-5. If step causes navigation, only include steps up to that point
+2. Each step = ONE click action
+3. Be specific: say WHERE (header, sidebar) and WHAT text to click
+4. For multi-page tasks: set willNavigate: true, completed: false
+5. Include navigation hints to help user understand the workflow
 6. DEFAULT to completed: false for any task involving navigation
-7. NEVER suggest documentation, help pages, or external resources`;
+7. NEVER suggest going to documentation or external resources`;
   }
 
   buildUserPrompt(task, url, title, dom) {
@@ -425,11 +470,162 @@ RULES:
       .map(e => e.text)
       .join(' > ');
     
+    // Detect if this is a GitHub-specific task and provide context
+    const taskLower = task.toLowerCase();
+    const urlLower = url.toLowerCase();
+    const isGitHub = urlLower.includes('github.com');
+    
+    let taskGuidance = '';
+    if (isGitHub) {
+      if (taskLower.includes('pull request') || taskLower.includes('pr ')) {
+        if (taskLower.includes('fork')) {
+          taskGuidance = `
+TASK GUIDANCE - PULL REQUEST FROM FORK:
+This is a multi-step process:
+1. If on YOUR fork: Look for "Contribute" dropdown OR navigate to original repo
+2. If on original repo: Click "Pull requests" tab → "New pull request" → "compare across forks"
+3. Select your fork as "head repository" 
+4. Review changes and click "Create pull request"
+Do NOT mark complete until on the PR creation form!`;
+        } else {
+          taskGuidance = `
+TASK GUIDANCE - PULL REQUEST:
+1. Click "Pull requests" tab in repo navigation
+2. Click "New pull request" button
+3. Select branches to compare
+4. Click "Create pull request" when ready
+Do NOT mark complete until on the PR creation form!`;
+        }
+      } else if (taskLower.includes('fork')) {
+        taskGuidance = `
+TASK GUIDANCE - FORK REPOSITORY:
+1. Look for "Fork" button (usually top-right, near "Star" and "Watch")
+2. Click it to open fork dialog
+3. Configure fork options
+4. Click "Create fork"`;
+      } else if (taskLower.includes('clone')) {
+        taskGuidance = `
+TASK GUIDANCE - CLONE REPOSITORY:
+1. Find the "Code" button (green button, NOT the navigation tab)
+2. Click to open dropdown with clone URLs
+3. Copy HTTPS or SSH URL`;
+      } else if (taskLower.includes('action') || taskLower.includes('workflow') || taskLower.includes('ci/cd')) {
+        taskGuidance = `
+TASK GUIDANCE - GITHUB ACTIONS:
+1. Click "Actions" tab in repository navigation
+2. Browse workflow templates or click "set up a workflow yourself"
+3. Edit the YAML configuration
+4. Click "Commit changes" to save
+This spans multiple pages - do NOT mark complete until workflow is configured!`;
+      }
+    }
+    
+    // AWS-specific guidance
+    if (urlLower.includes('aws.amazon.com') || urlLower.includes('console.aws')) {
+      if (taskLower.includes('s3') || taskLower.includes('bucket')) {
+        taskGuidance = `
+TASK GUIDANCE - AWS S3 BUCKET:
+AWS Console has complex nested UI. Follow these steps:
+1. Search for "S3" in AWS console search or navigate to S3 service
+2. Click "Create bucket" button
+3. Configure bucket name and region
+4. Scroll down to configure settings (public access, versioning, etc.)
+5. Click "Create bucket" at the bottom
+IMPORTANT: AWS modals and settings are in nested panels - look for {in-modal} elements!`;
+      } else if (taskLower.includes('lambda')) {
+        taskGuidance = `
+TASK GUIDANCE - AWS LAMBDA:
+1. Navigate to Lambda service
+2. Click "Create function"
+3. Choose "Author from scratch" or use blueprint
+4. Configure function name, runtime, permissions
+5. Click "Create function"
+6. Add code and configure triggers
+Multi-step process with nested settings panels!`;
+      }
+    }
+    
+    // Vercel-specific guidance
+    if (urlLower.includes('vercel.com')) {
+      if (taskLower.includes('deploy') || taskLower.includes('project')) {
+        taskGuidance = `
+TASK GUIDANCE - VERCEL DEPLOYMENT:
+1. Click "Add New..." or "New Project"
+2. Connect/select GitHub repository
+3. Configure build settings (framework, build command)
+4. Click "Deploy"
+Look for primary action buttons with {primary-action} hint!`;
+      }
+    }
+    
+    // Figma-specific guidance
+    if (urlLower.includes('figma.com')) {
+      if (taskLower.includes('auto layout') || taskLower.includes('autolayout')) {
+        taskGuidance = `
+TASK GUIDANCE - FIGMA AUTO LAYOUT:
+1. Select frame or elements
+2. Look for "+" next to "Auto layout" in right panel
+3. Or use keyboard shortcut Shift+A
+4. Configure spacing, padding, direction
+Figma UI has panels - look for {figma-ui} hints!`;
+      } else if (taskLower.includes('export')) {
+        taskGuidance = `
+TASK GUIDANCE - FIGMA EXPORT:
+1. Select layer(s) to export
+2. Look at right sidebar for "Export" section
+3. Click "+" to add export setting
+4. Choose format (PNG, SVG, PDF, JPG)
+5. Click "Export" button`;
+      }
+    }
+    
+    // Stripe-specific guidance
+    if (urlLower.includes('stripe.com') || urlLower.includes('dashboard.stripe')) {
+      if (taskLower.includes('subscription') || taskLower.includes('product')) {
+        taskGuidance = `
+TASK GUIDANCE - STRIPE SUBSCRIPTION:
+1. Navigate to Products section
+2. Click "Add product" or "Create product"
+3. Configure product details
+4. Add pricing (one-time or recurring)
+5. Set billing interval for subscriptions
+Stripe uses modals - look for {in-modal} elements!`;
+      }
+    }
+    
+    // Shopify-specific guidance
+    if (urlLower.includes('shopify.com') || urlLower.includes('myshopify.com')) {
+      if (taskLower.includes('product') || taskLower.includes('variant')) {
+        taskGuidance = `
+TASK GUIDANCE - SHOPIFY PRODUCT:
+1. Go to Products section in admin
+2. Click "Add product"
+3. Fill in product details
+4. For variants: scroll to "Variants" section
+5. Add size/color options
+6. Set prices and inventory per variant
+7. Click "Save"`;
+      }
+    }
+    
+    // Add page context information if available
+    let contextInfo = '';
+    if (dom.pageContext) {
+      const ctx = dom.pageContext;
+      contextInfo = `\n\nPAGE STATE:`;
+      if (ctx.hasModal) contextInfo += `\n- Modal/dialog is OPEN (prioritize {in-modal} elements!)`;
+      if (ctx.hasDropdownOpen) contextInfo += `\n- Dropdown is OPEN (look for menu items)`;
+      if (ctx.isLoading) contextInfo += `\n- Page is LOADING (some elements may not be visible yet)`;
+      if (ctx.platform !== 'unknown') contextInfo += `\n- Platform: ${ctx.platform}`;
+      if (ctx.pageType !== 'general') contextInfo += `\n- Page type: ${ctx.pageType}`;
+    }
+    
     return `CURRENT PAGE: ${title}
 URL: ${url}
-PAGE SECTIONS: ${headings || 'Main page'}
+PAGE SECTIONS: ${headings || 'Main page'}${contextInfo}
 
 USER WANTS TO: "${task}"
+${taskGuidance}
 
 AVAILABLE CLICKABLE ELEMENTS (use these exact IDs):
 ${elementList}
@@ -439,19 +635,22 @@ ELEMENT HINTS EXPLAINED:
 - {primary-action} = Visually prominent button (colored, stands out)
 - {navigation} = Part of site navigation tabs/menu
 - {form} = Inside a form
+- {in-modal} = Inside a modal/dialog (HIGH PRIORITY when modal is open!)
+- {aws-ui}, {figma-ui}, {stripe-ui} = Platform-specific UI component
 
 CRITICAL SELECTION RULES:
-1. When multiple elements have SAME TEXT, use hints to pick the right one:
+1. When a MODAL is open: ALWAYS prioritize {in-modal} elements!
+2. When multiple elements have SAME TEXT, use hints to pick the right one:
    - For ACTIONS (clone, download, create): prefer {dropdown} or {primary-action} over {navigation}
    - Navigation tabs are for switching views, NOT for actions
    - Action buttons are usually in 'main' location, not 'sidebar'
 
-2. Example: "clone repository" - there might be:
+3. Example: "clone repository" - there might be:
    - "Code" [link] (navigation) {navigation} ← WRONG, this is a nav tab
    - "Code" [button] (main) {dropdown, primary-action} ← CORRECT, this opens clone options
 
-3. ALWAYS prefer: main > header > sidebar for action tasks
-4. ALWAYS prefer: {primary-action} or {dropdown} over {navigation} for actions
+4. ALWAYS prefer: modal > main > header > sidebar for action tasks
+5. ALWAYS prefer: {primary-action} or {dropdown} over {navigation} for actions
 
 Use ONLY the element IDs listed above.`;
   }
