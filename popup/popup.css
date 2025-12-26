@@ -425,6 +425,236 @@ body {
   animation: spin 1s linear infinite;
 }
 
+/* Button Divider */
+.button-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+}
+
+.divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--gray-300);
+}
+
+.divider-text {
+  font-size: 12px;
+  color: var(--gray-500);
+  text-transform: lowercase;
+}
+
+/* Record Button */
+.record-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  background: white;
+  color: var(--error-500);
+  border: 2px solid var(--error-400);
+  border-radius: var(--radius-lg);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.record-btn:hover {
+  background: var(--error-50);
+  border-color: var(--error-500);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.15);
+}
+
+.record-btn:active {
+  transform: translateY(0);
+}
+
+.record-icon {
+  color: var(--error-500);
+}
+
+/* Recording Panel */
+.recording-panel {
+  background: linear-gradient(135deg, var(--error-50) 0%, #fff 100%);
+  border: 2px solid var(--error-200);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  animation: fadeIn 0.2s ease;
+}
+
+.recording-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.recording-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.recording-dot {
+  width: 10px;
+  height: 10px;
+  background: var(--error-500);
+  border-radius: 50%;
+  animation: recordingPulse 1s ease-in-out infinite;
+}
+
+@keyframes recordingPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+.recording-text {
+  font-weight: 600;
+  color: var(--error-600);
+}
+
+.recording-step-count {
+  background: var(--error-100);
+  color: var(--error-700);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.recording-info {
+  margin-bottom: var(--space-3);
+}
+
+.recording-hint {
+  font-size: 13px;
+  color: var(--gray-600);
+  margin-bottom: var(--space-1);
+}
+
+.recording-url {
+  font-size: 11px;
+  color: var(--gray-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recording-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.stop-recording-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: linear-gradient(135deg, var(--error-500) 0%, var(--error-600) 100%);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.stop-recording-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.cancel-recording-btn {
+  padding: var(--space-3);
+  background: var(--gray-100);
+  color: var(--gray-600);
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.cancel-recording-btn:hover {
+  background: var(--gray-200);
+}
+
+/* Recorded Steps Preview in Save Modal */
+.recorded-steps-preview {
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.preview-header {
+  margin-bottom: var(--space-2);
+}
+
+.preview-badge {
+  background: var(--error-100);
+  color: var(--error-700);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.preview-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.preview-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--gray-700);
+}
+
+.preview-step .step-num {
+  background: var(--gray-200);
+  color: var(--gray-600);
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.preview-step .step-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-more {
+  font-size: 11px;
+  color: var(--gray-500);
+  font-style: italic;
+  padding-left: 28px;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* Status Message */
 .status-message {
   padding: var(--space-3);
@@ -453,6 +683,12 @@ body {
   background: var(--info-50);
   color: var(--info-600);
   border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.status-message.info {
+  background: var(--gray-100);
+  color: var(--gray-700);
+  border: 1px solid var(--gray-200);
 }
 
 /* Auto-save Section */
@@ -1066,6 +1302,80 @@ body {
 .guide-badge.imported {
   background: var(--info-50);
   color: var(--info-600);
+}
+
+.guide-badge.recorded {
+  background: var(--error-50);
+  color: var(--error-600);
+}
+
+/* Step Edit Controls */
+.step-edit-controls {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+  margin-bottom: var(--space-2);
+}
+
+.step-action-btn {
+  padding: 6px 10px;
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--gray-600);
+  transition: all var(--transition-fast);
+}
+
+.step-action-btn:hover {
+  background: var(--gray-100);
+  border-color: var(--gray-300);
+}
+
+.step-action-btn.edit-btn:hover {
+  color: var(--primary-600);
+  border-color: var(--primary-300);
+  background: var(--primary-50);
+}
+
+.step-action-btn.delete-btn:hover {
+  color: var(--error-600);
+  border-color: var(--error-300);
+  background: var(--error-50);
+}
+
+/* Modal Textarea */
+.modal-textarea {
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 80px;
+  margin-bottom: var(--space-3);
+}
+
+.modal-textarea:focus {
+  outline: none;
+  border-color: var(--primary-400);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+
+/* Step Preview in Delete Modal */
+.step-preview {
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  font-size: 13px;
+  color: var(--gray-700);
 }
 
 .guide-controls {

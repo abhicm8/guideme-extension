@@ -74,6 +74,49 @@
           </span>
           Guide Me
         </button>
+        
+        <!-- Divider between AI Guide and Recording -->
+        <div class="button-divider">
+          <span class="divider-line"></span>
+          <span class="divider-text">or</span>
+          <span class="divider-line"></span>
+        </div>
+        
+        <!-- Record Guide Button -->
+        <button id="recordBtn" class="record-btn">
+          <span class="icon btn-icon record-icon">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="currentColor"/></svg>
+          </span>
+          Record Guide
+        </button>
+      </div>
+      
+      <!-- Recording Active Panel (shown when recording) -->
+      <div id="recordingPanel" class="recording-panel hidden">
+        <div class="recording-header">
+          <div class="recording-indicator">
+            <span class="recording-dot"></span>
+            <span class="recording-text">Recording...</span>
+          </div>
+          <span id="recordingStepCount" class="recording-step-count">0 steps</span>
+        </div>
+        
+        <div class="recording-info">
+          <p class="recording-hint">Perform your task normally. Each click and input will be captured.</p>
+          <p id="recordingStartUrl" class="recording-url">Started on: </p>
+        </div>
+        
+        <div class="recording-actions">
+          <button id="stopRecordingBtn" class="stop-recording-btn">
+            <span class="icon btn-icon">
+              <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+            </span>
+            Stop & Save
+          </button>
+          <button id="cancelRecordingBtn" class="cancel-recording-btn">
+            Cancel
+          </button>
+        </div>
       </div>
 
       <div id="statusMessage" class="status-message hidden"></div>
@@ -238,6 +281,20 @@
           <span class="step-number">Step 1 of 3</span>
           <p class="step-instruction">Click on the "File" menu in the top navigation bar.</p>
         </div>
+        
+        <!-- Step Edit Controls (shown for saved/recorded guides) -->
+        <div id="stepEditControls" class="step-edit-controls hidden">
+          <button id="editStepBtn" class="step-action-btn edit-btn" title="Edit step description">
+            <span class="icon icon-sm">
+              <svg viewBox="0 0 24 24"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+            </span>
+          </button>
+          <button id="deleteStepBtn" class="step-action-btn delete-btn" title="Delete this step">
+            <span class="icon icon-sm">
+              <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+            </span>
+          </button>
+        </div>
 
         <div class="guide-controls">
           <button id="prevStepBtn" class="nav-btn" disabled>
@@ -347,6 +404,47 @@
         <div class="modal-actions">
           <button id="cancelDeleteBtn" class="modal-btn cancel">Cancel</button>
           <button id="confirmDeleteBtn" class="modal-btn danger">Delete</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Edit Step Modal -->
+    <div id="editStepModal" class="modal hidden">
+      <div class="modal-content">
+        <h3>
+          <span class="icon">
+            <svg viewBox="0 0 24 24"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+          </span>
+          Edit Step
+        </h3>
+        <p class="modal-desc">Modify the step description to better explain this action.</p>
+        <textarea 
+          id="editStepInput" 
+          class="modal-textarea" 
+          placeholder="Step description..."
+          rows="3"
+        ></textarea>
+        <div class="modal-actions">
+          <button id="cancelEditStepBtn" class="modal-btn cancel">Cancel</button>
+          <button id="confirmEditStepBtn" class="modal-btn confirm">Save</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Delete Step Confirmation Modal -->
+    <div id="deleteStepModal" class="modal hidden">
+      <div class="modal-content">
+        <h3>
+          <span class="icon" style="color: var(--error-500);">
+            <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/></svg>
+          </span>
+          Delete Step?
+        </h3>
+        <p class="modal-desc">Remove this step from the guide? This action cannot be undone.</p>
+        <div id="deleteStepPreview" class="step-preview"></div>
+        <div class="modal-actions">
+          <button id="cancelDeleteStepBtn" class="modal-btn cancel">Cancel</button>
+          <button id="confirmDeleteStepBtn" class="modal-btn danger">Delete Step</button>
         </div>
       </div>
     </div>

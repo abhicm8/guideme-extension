@@ -30,6 +30,52 @@ class GuideMePopup {
     this.bindEvents();
     this.updateSiteName();
     this.setupVoiceRecognition();
+    
+    // Restore guide state from content script if a guide is running
+    await this.restoreGuideStateFromContentScript();
+  }
+  
+  async restoreGuideStateFromContentScript() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id || tab.url?.startsWith('chrome://') || tab.url?.startsWith('chrome-extension://')) {
+        return;
+      }
+      
+      const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_CURRENT_GUIDE_DATA' });
+      
+      if (response && response.steps && response.steps.length > 0) {
+        console.log('Restoring guide state from content script');
+        console.log('- savedGuideId:', response.savedGuideId);
+        console.log('- steps (current page):', response.steps.length);
+        console.log('- allOriginalSteps:', response.allOriginalSteps?.length);
+        console.log('- currentStepIndex:', response.currentStepIndex);
+        console.log('- originalStepIndex:', response.originalStepIndex);
+        
+        // For saved guides, use allOriginalSteps (full guide) to ensure we can edit properly
+        // Calculate the actual index into the full guide
+        if (response.isSavedGuideReplay && response.allOriginalSteps) {
+          this.currentSteps = response.allOriginalSteps;
+          // The actual step in the full guide = originalStepIndex + currentStepIndex
+          this.currentStepIndex = (response.originalStepIndex || 0) + (response.currentStepIndex || 0);
+          console.log('- Calculated full guide index:', this.currentStepIndex);
+        } else {
+          this.currentSteps = response.steps;
+          this.currentStepIndex = response.currentStepIndex || 0;
+        }
+        
+        this.currentTask = response.task || '';
+        this.currentUrl = response.url || '';
+        this.currentPlayingGuideId = response.savedGuideId || null;
+        
+        // Show guide view if a guide is active
+        this.showView('guide');
+        this.renderCurrentStep();
+      }
+    } catch (e) {
+      // No guide running or content script not injected, that's fine
+      console.log('No active guide to restore:', e.message);
+    }
   }
 
   bindElements() {
@@ -98,6 +144,27 @@ class GuideMePopup {
     this.deleteConfirmModal = document.getElementById('deleteConfirmModal');
     this.cancelDeleteBtn = document.getElementById('cancelDeleteBtn');
     this.confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+    
+    // Step edit elements
+    this.stepEditControls = document.getElementById('stepEditControls');
+    this.editStepBtn = document.getElementById('editStepBtn');
+    this.deleteStepBtn = document.getElementById('deleteStepBtn');
+    this.editStepModal = document.getElementById('editStepModal');
+    this.editStepInput = document.getElementById('editStepInput');
+    this.cancelEditStepBtn = document.getElementById('cancelEditStepBtn');
+    this.confirmEditStepBtn = document.getElementById('confirmEditStepBtn');
+    this.deleteStepModal = document.getElementById('deleteStepModal');
+    this.deleteStepPreview = document.getElementById('deleteStepPreview');
+    this.cancelDeleteStepBtn = document.getElementById('cancelDeleteStepBtn');
+    this.confirmDeleteStepBtn = document.getElementById('confirmDeleteStepBtn');
+    
+    // Recording elements
+    this.recordBtn = document.getElementById('recordBtn');
+    this.recordingPanel = document.getElementById('recordingPanel');
+    this.recordingStepCount = document.getElementById('recordingStepCount');
+    this.recordingStartUrl = document.getElementById('recordingStartUrl');
+    this.stopRecordingBtn = document.getElementById('stopRecordingBtn');
+    this.cancelRecordingBtn = document.getElementById('cancelRecordingBtn');
   }
 
   bindEvents() {
@@ -172,6 +239,30 @@ class GuideMePopup {
     // Guide navigation
     this.prevStepBtn.addEventListener('click', () => this.navigateStep(-1));
     this.nextStepBtn.addEventListener('click', () => this.navigateStep(1));
+    
+    // Step editing
+    this.editStepBtn.addEventListener('click', () => this.showEditStepModal());
+    this.deleteStepBtn.addEventListener('click', () => this.showDeleteStepModal());
+    this.cancelEditStepBtn.addEventListener('click', () => this.hideEditStepModal());
+    this.confirmEditStepBtn.addEventListener('click', () => this.confirmEditStep());
+    this.cancelDeleteStepBtn.addEventListener('click', () => this.hideDeleteStepModal());
+    this.confirmDeleteStepBtn.addEventListener('click', () => this.confirmDeleteStep());
+    
+    // Recording events
+    this.recordBtn.addEventListener('click', () => this.startRecording());
+    this.stopRecordingBtn.addEventListener('click', () => this.stopRecording());
+    this.cancelRecordingBtn.addEventListener('click', () => this.cancelRecording());
+    
+    // Check if there's an active recording on popup open
+    this.checkActiveRecording();
+    
+    // Listen for recording updates from content script
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.type === 'RECORDING_STOPPED') {
+        this.handleRecordingComplete(message.payload);
+        sendResponse({ received: true });
+      }
+    });
   }
 
   // ============ VOICE RECOGNITION (runs directly in popup - visible UI context) ============
@@ -439,6 +530,7 @@ class GuideMePopup {
       const category = guide.category || 'other';
       const categoryIcon = categoryIcons[category] || categoryIcons.other;
       const importedBadge = guide.imported ? '<span class="guide-badge imported">imported</span>' : '';
+      const recordedBadge = guide.isRecorded ? '<span class="guide-badge recorded">recorded</span>' : '';
       
       return `
         <div class="saved-guide-item" data-guide-id="${guide.id}">
@@ -452,6 +544,7 @@ class GuideMePopup {
               <span>•</span>
               <span>${guide.steps?.length || 0} steps</span>
               ${importedBadge}
+              ${recordedBadge}
             </div>
           </div>
           <div class="saved-guide-actions">
@@ -544,21 +637,39 @@ class GuideMePopup {
     }
 
     const category = this.macroCategorySelect ? this.macroCategorySelect.value : 'other';
+    
+    // Check if we're saving a recorded guide
+    let stepsToSave = this.currentSteps;
+    let taskName = this.currentTask;
+    let startUrl = this.currentUrl;
+    let isRecorded = false;
+    
+    if (this.recordedGuide && this.recordedGuide.steps.length > 0) {
+      stepsToSave = this.recordedGuide.steps;
+      taskName = name;
+      startUrl = this.recordedGuide.startUrl;
+      isRecorded = true;
+    }
 
     try {
       await chrome.runtime.sendMessage({
         type: 'SAVE_MACRO',
         payload: {
           name: name,
-          task: this.currentTask,
-          steps: this.currentSteps,
-          startUrl: this.currentUrl,
-          category: category
+          task: taskName,
+          steps: stepsToSave,
+          startUrl: startUrl,
+          category: category,
+          isRecorded: isRecorded
         }
       });
 
       this.hideSaveMacroModal();
       this.showStatus('Guide saved! Find it in Saved Guides.', 'success');
+      
+      // Clear recorded guide and storage
+      this.recordedGuide = null;
+      await chrome.storage.local.remove(['completedRecording']);
     } catch (error) {
       console.error('Failed to save guide:', error);
       this.showStatus('Failed to save guide', 'error');
@@ -767,6 +878,7 @@ class GuideMePopup {
       this.currentSteps = guide.steps;
       this.currentStepIndex = 0;
       this.currentUrl = tab.url;
+      this.currentPlayingGuideId = guide.id; // Store for editing
 
       // First, ensure content script is loaded by injecting it
       try {
@@ -789,7 +901,9 @@ class GuideMePopup {
           steps: this.currentSteps,
           highlightColor: this.settings.highlightColor,
           task: guide.task,
-          isMacro: true
+          isMacro: true,
+          isRecorded: guide.isRecorded || false,
+          guideId: guide.id // Pass guide ID for edit persistence
         }
       });
 
@@ -1034,6 +1148,11 @@ class GuideMePopup {
       ${hintText}
     `;
 
+    // Show step edit controls for saved guides
+    if (this.stepEditControls) {
+      this.stepEditControls.classList.remove('hidden');
+    }
+
     // Update navigation buttons
     this.prevStepBtn.disabled = this.currentStepIndex === 0;
     this.nextStepBtn.innerHTML = this.currentStepIndex === totalSteps - 1 
@@ -1046,6 +1165,241 @@ class GuideMePopup {
 
     // Highlight current element
     this.highlightCurrentStep();
+  }
+  
+  // ============ STEP EDITING ============
+  
+  showEditStepModal() {
+    const step = this.currentSteps[this.currentStepIndex];
+    if (!step) return;
+    
+    this.editStepInput.value = step.description || step.instruction || '';
+    this.editStepModal.classList.remove('hidden');
+    this.editStepInput.focus();
+    this.editStepInput.select();
+  }
+  
+  hideEditStepModal() {
+    this.editStepModal.classList.add('hidden');
+  }
+  
+  async confirmEditStep() {
+    const newDescription = this.editStepInput.value.trim();
+    if (!newDescription) {
+      this.editStepInput.style.borderColor = '#dc2626';
+      return;
+    }
+    
+    console.log('confirmEditStep - currentStepIndex:', this.currentStepIndex);
+    console.log('confirmEditStep - currentPlayingGuideId:', this.currentPlayingGuideId);
+    
+    // Update step description locally
+    this.currentSteps[this.currentStepIndex].description = newDescription;
+    this.currentSteps[this.currentStepIndex].instruction = newDescription;
+    
+    // Get guide ID - first check local, then try content script
+    let guideId = this.currentPlayingGuideId;
+    if (!guideId) {
+      console.log('No local guideId, trying content script...');
+      guideId = await this.getGuideIdFromContentScript();
+    }
+    
+    console.log('Final guideId:', guideId);
+    
+    // Update saved guide if we have a guide ID
+    if (guideId) {
+      const success = await this.updateSavedGuideStep(guideId, this.currentStepIndex, { 
+        description: newDescription,
+        instruction: newDescription
+      });
+      
+      if (success) {
+        // Also update content script's steps
+        await this.syncStepsToContentScript();
+        this.showStatus('Step updated!', 'success');
+      } else {
+        this.showStatus('Failed to save changes', 'error');
+      }
+    } else {
+      console.log('No guide ID found - changes will be local only');
+      this.showStatus('Step updated (local only)', 'warning');
+    }
+    
+    this.hideEditStepModal();
+    this.renderCurrentStep();
+  }
+  
+  async getGuideIdFromContentScript() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_CURRENT_GUIDE_DATA' });
+      console.log('getGuideIdFromContentScript response:', response);
+      if (response?.savedGuideId) {
+        // Cache it for future use
+        this.currentPlayingGuideId = response.savedGuideId;
+        return response.savedGuideId;
+      }
+    } catch (e) {
+      console.log('Could not get guide ID from content script:', e);
+    }
+    return null;
+  }
+  
+  async syncStepsToContentScript() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await chrome.tabs.sendMessage(tab.id, {
+        type: 'UPDATE_STEPS',
+        payload: {
+          steps: this.currentSteps,
+          currentStepIndex: this.currentStepIndex,
+          wasEdited: true // Mark that edits were made from popup
+        }
+      });
+      console.log('Steps synced to content script (with edit flag)');
+    } catch (e) {
+      console.log('Could not sync steps to content script:', e);
+    }
+  }
+  
+  showDeleteStepModal() {
+    const step = this.currentSteps[this.currentStepIndex];
+    if (!step) return;
+    
+    // Don't allow deleting if only 1 step
+    if (this.currentSteps.length <= 1) {
+      this.showStatus('Cannot delete the only step', 'error');
+      return;
+    }
+    
+    this.deleteStepPreview.textContent = step.description || step.instruction || 'This step';
+    this.deleteStepModal.classList.remove('hidden');
+  }
+  
+  hideDeleteStepModal() {
+    this.deleteStepModal.classList.add('hidden');
+  }
+  
+  async confirmDeleteStep() {
+    console.log('confirmDeleteStep - before delete, steps:', this.currentSteps.length);
+    console.log('confirmDeleteStep - currentStepIndex:', this.currentStepIndex);
+    
+    // Remove the step
+    this.currentSteps.splice(this.currentStepIndex, 1);
+    
+    // Adjust index if needed
+    if (this.currentStepIndex >= this.currentSteps.length) {
+      this.currentStepIndex = this.currentSteps.length - 1;
+    }
+    
+    console.log('confirmDeleteStep - after delete, steps:', this.currentSteps.length);
+    
+    // Get guide ID - first check local, then try content script
+    let guideId = this.currentPlayingGuideId;
+    if (!guideId) {
+      guideId = await this.getGuideIdFromContentScript();
+    }
+    
+    // Update saved guide if we have a guide ID
+    if (guideId) {
+      console.log('Updating saved guide steps after delete:', guideId);
+      const success = await this.updateSavedGuideSteps(guideId, [...this.currentSteps]);
+      
+      if (success) {
+        // Also update content script's steps
+        await this.syncStepsToContentScript();
+        this.showStatus('Step deleted!', 'success');
+      } else {
+        this.showStatus('Failed to save changes', 'error');
+      }
+    } else {
+      console.log('No guide ID found - delete will be local only');
+      this.showStatus('Step deleted (local only)', 'warning');
+    }
+    
+    this.hideDeleteStepModal();
+    this.renderCurrentStep();
+    this.highlightCurrentStep();
+  }
+  
+  async updateSavedGuideStep(guideId, stepIndex, updates) {
+    try {
+      console.log('updateSavedGuideStep:', guideId, 'step:', stepIndex, 'updates:', updates);
+      
+      const response = await chrome.runtime.sendMessage({ type: 'GET_MACROS' });
+      const guides = response || [];
+      
+      console.log('Found', guides.length, 'guides');
+      
+      const guideIndex = guides.findIndex(g => g.id === guideId);
+      console.log('Guide index:', guideIndex);
+      
+      if (guideIndex >= 0) {
+        const guide = guides[guideIndex];
+        console.log('Guide has', guide.steps?.length, 'steps');
+        
+        if (guide.steps && guide.steps[stepIndex]) {
+          // Update the step
+          guide.steps[stepIndex].description = updates.description;
+          guide.steps[stepIndex].instruction = updates.instruction;
+          guide.updatedAt = Date.now();
+          
+          // Save back to storage
+          await chrome.storage.local.set({ guideme_macros: guides });
+          
+          // Verify the save
+          const verify = await chrome.storage.local.get(['guideme_macros']);
+          const savedDesc = verify.guideme_macros?.[guideIndex]?.steps?.[stepIndex]?.description;
+          console.log('Verified saved description:', savedDesc?.substring(0, 30));
+          
+          console.log('✓ Guide step updated successfully');
+          return true;
+        } else {
+          console.warn('Step not found at index:', stepIndex);
+          return false;
+        }
+      } else {
+        console.warn('Guide not found:', guideId);
+        return false;
+      }
+    } catch (e) {
+      console.error('Failed to update saved guide step:', e);
+      return false;
+    }
+  }
+  
+  async updateSavedGuideSteps(guideId, steps) {
+    try {
+      console.log('updateSavedGuideSteps:', guideId, 'new step count:', steps.length);
+      
+      const response = await chrome.runtime.sendMessage({ type: 'GET_MACROS' });
+      const guides = response || [];
+      const guideIndex = guides.findIndex(g => g.id === guideId);
+      
+      console.log('Guide index:', guideIndex);
+      
+      if (guideIndex >= 0) {
+        // Make a deep copy of steps
+        guides[guideIndex].steps = steps.map(s => ({...s}));
+        guides[guideIndex].updatedAt = Date.now();
+        
+        await chrome.storage.local.set({ guideme_macros: guides });
+        
+        // Verify the save
+        const verify = await chrome.storage.local.get(['guideme_macros']);
+        const savedCount = verify.guideme_macros?.[guideIndex]?.steps?.length;
+        console.log('Verified saved step count:', savedCount);
+        
+        console.log('✓ Guide steps updated successfully');
+        return true;
+      } else {
+        console.warn('Guide not found:', guideId);
+        return false;
+      }
+    } catch (e) {
+      console.error('Failed to update saved guide steps:', e);
+      return false;
+    }
   }
 
   async highlightCurrentStep() {
@@ -1094,6 +1448,307 @@ class GuideMePopup {
     this.currentUrl = '';
     this.showView('main');
     this.hideStatus();
+  }
+  
+  // ============ GUIDE RECORDING MODE ============
+  
+  async checkActiveRecording() {
+    try {
+      // First check for completed recording that needs saving
+      const completed = await chrome.storage.local.get(['completedRecording']);
+      if (completed.completedRecording && completed.completedRecording.steps?.length > 0) {
+        // Check if it's recent (within last 30 minutes)
+        const age = Date.now() - (completed.completedRecording.completedAt || 0);
+        if (age < 30 * 60 * 1000) {
+          console.log('Found completed recording with', completed.completedRecording.steps.length, 'steps');
+          this.handleRecordingComplete(completed.completedRecording);
+          return;
+        } else {
+          // Old recording, clear it
+          await chrome.storage.local.remove(['completedRecording']);
+        }
+      }
+      
+      // Check for active recording in progress
+      const result = await chrome.storage.local.get(['activeRecording']);
+      if (result.activeRecording && result.activeRecording.isRecording) {
+        // Show recording panel
+        this.showRecordingPanel(result.activeRecording);
+      }
+    } catch (e) {
+      console.log('No active recording');
+    }
+  }
+  
+  async startRecording() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab) {
+        this.showStatus('Please navigate to a website first', 'error');
+        return;
+      }
+      
+      // Check if we can inject content script
+      if (tab.url.startsWith('chrome://') || tab.url.startsWith('edge://') || tab.url.startsWith('about:')) {
+        this.showStatus('Cannot record on browser internal pages', 'error');
+        return;
+      }
+      
+      // Send start recording message to content script
+      await chrome.tabs.sendMessage(tab.id, { type: 'START_RECORDING' });
+      
+      // Show recording panel
+      this.showRecordingPanel({
+        startUrl: tab.url,
+        steps: [],
+        startTime: Date.now()
+      });
+      
+      this.showStatus('Recording started! Perform your task...', 'success');
+      
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      this.showStatus('Failed to start recording. Try refreshing the page.', 'error');
+    }
+  }
+  
+  showRecordingPanel(recordingData) {
+    // Hide main input section
+    const inputSection = document.querySelector('.input-section');
+    if (inputSection) inputSection.classList.add('hidden');
+    
+    // Show recording panel
+    this.recordingPanel.classList.remove('hidden');
+    
+    // Update recording info
+    const url = recordingData.startUrl || '';
+    const hostname = url ? new URL(url).hostname : 'unknown';
+    this.recordingStartUrl.textContent = `Started on: ${hostname}`;
+    this.recordingStepCount.textContent = `${recordingData.steps?.length || 0} steps`;
+    
+    // Start polling for step count updates
+    this.startRecordingPoll();
+  }
+  
+  hideRecordingPanel() {
+    // Show main input section
+    const inputSection = document.querySelector('.input-section');
+    if (inputSection) inputSection.classList.remove('hidden');
+    
+    // Hide recording panel
+    this.recordingPanel.classList.add('hidden');
+    
+    // Stop polling
+    this.stopRecordingPoll();
+  }
+  
+  startRecordingPoll() {
+    this.recordingPollInterval = setInterval(async () => {
+      try {
+        const result = await chrome.storage.local.get(['activeRecording']);
+        if (result.activeRecording) {
+          this.recordingStepCount.textContent = `${result.activeRecording.steps?.length || 0} steps`;
+        }
+      } catch (e) {}
+    }, 1000);
+  }
+  
+  stopRecordingPoll() {
+    if (this.recordingPollInterval) {
+      clearInterval(this.recordingPollInterval);
+      this.recordingPollInterval = null;
+    }
+  }
+  
+  async stopRecording() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const response = await chrome.tabs.sendMessage(tab.id, { type: 'STOP_RECORDING' });
+      
+      if (response && response.data) {
+        this.handleRecordingComplete(response.data);
+      }
+    } catch (error) {
+      console.error('Failed to stop recording:', error);
+      
+      // Try to get data from storage directly
+      const result = await chrome.storage.local.get(['activeRecording']);
+      if (result.activeRecording && result.activeRecording.steps?.length > 0) {
+        this.handleRecordingComplete({
+          steps: result.activeRecording.steps,
+          startUrl: result.activeRecording.startUrl
+        });
+      } else {
+        this.showStatus('Failed to stop recording', 'error');
+      }
+    }
+    
+    // Clear storage
+    await chrome.storage.local.remove(['activeRecording']);
+    this.hideRecordingPanel();
+  }
+  
+  async cancelRecording() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await chrome.tabs.sendMessage(tab.id, { type: 'STOP_RECORDING' });
+    } catch (e) {}
+    
+    // Clear storage
+    await chrome.storage.local.remove(['activeRecording']);
+    this.hideRecordingPanel();
+    this.showStatus('Recording cancelled', 'info');
+  }
+  
+  async handleRecordingComplete(data) {
+    if (!data || !data.steps || data.steps.length === 0) {
+      this.showStatus('No steps were recorded', 'error');
+      await chrome.storage.local.remove(['completedRecording']);
+      return;
+    }
+    
+    console.log('Recording complete:', data.steps.length, 'steps');
+    
+    // Hide recording panel if visible
+    this.hideRecordingPanel();
+    
+    // Convert recorded steps to guide format
+    const guideSteps = data.steps.map((step, index) => ({
+      id: `gm-recorded-${index + 1}`,
+      instruction: step.description,
+      description: step.description,
+      action: step.action,
+      element: step.element,
+      value: step.value,
+      robustSelectors: step.robustSelectors,
+      pageUrl: step.pageUrl,
+      pageTitle: step.pageTitle
+    }));
+    
+    // Store the recorded guide temporarily
+    this.recordedGuide = {
+      steps: guideSteps,
+      startUrl: data.startUrl,
+      endUrl: data.endUrl,
+      duration: data.duration
+    };
+    
+    // Generate smart suggested name based on page and actions
+    const hostname = data.startUrl ? new URL(data.startUrl).hostname.replace('www.', '') : 'unknown';
+    const firstAction = data.steps[0]?.description || '';
+    const lastAction = data.steps[data.steps.length - 1]?.description || '';
+    
+    // Try to create a meaningful name
+    let suggestedName = '';
+    if (lastAction.toLowerCase().includes('create')) {
+      suggestedName = `Create something on ${hostname}`;
+    } else if (lastAction.toLowerCase().includes('submit')) {
+      suggestedName = `Submit form on ${hostname}`;
+    } else {
+      suggestedName = `Guide on ${hostname} (${data.steps.length} steps)`;
+    }
+    
+    this.macroNameInput.value = suggestedName;
+    this.macroNameInput.placeholder = 'e.g., Create a new repository, Submit contact form...';
+    this.macroCategorySelect.value = 'other';
+    
+    // Show modal with updated content for recorded guide
+    this.saveMacroModal.classList.remove('hidden');
+    
+    // Update modal title and add step preview
+    const modalTitle = this.saveMacroModal.querySelector('h3');
+    if (modalTitle) {
+      modalTitle.innerHTML = `
+        <span class="icon" style="color: #ef4444;">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="currentColor"/></svg>
+        </span> 
+        Save Recorded Guide
+      `;
+    }
+    
+    // Add step preview if not already present
+    let previewEl = this.saveMacroModal.querySelector('.recorded-steps-preview');
+    if (!previewEl) {
+      previewEl = document.createElement('div');
+      previewEl.className = 'recorded-steps-preview';
+      const inputGroup = this.saveMacroModal.querySelector('.input-group');
+      if (inputGroup) {
+        inputGroup.parentNode.insertBefore(previewEl, inputGroup);
+      }
+    }
+    
+    // Show first few steps as preview
+    const previewSteps = data.steps.slice(0, 4);
+    previewEl.innerHTML = `
+      <div class="preview-header">
+        <span class="preview-badge">${data.steps.length} steps recorded</span>
+      </div>
+      <div class="preview-steps">
+        ${previewSteps.map((s, i) => `
+          <div class="preview-step">
+            <span class="step-num">${i + 1}</span>
+            <span class="step-desc">${this.escapeHtml(s.description?.substring(0, 50) || 'Action')}</span>
+          </div>
+        `).join('')}
+        ${data.steps.length > 4 ? `<div class="preview-more">...and ${data.steps.length - 4} more steps</div>` : ''}
+      </div>
+    `;
+    
+    // Focus on name input
+    setTimeout(() => this.macroNameInput.focus(), 100);
+  }
+  
+  // Override saveMacro to handle recorded guides
+  async saveMacroWithRecording() {
+    const name = this.macroNameInput.value.trim();
+    const category = this.macroCategorySelect.value;
+    
+    if (!name) {
+      this.showStatus('Please enter a name for your guide', 'error');
+      return;
+    }
+    
+    // Check if we're saving a recorded guide
+    let stepsToSave = this.currentSteps;
+    let taskName = this.currentTask;
+    let startUrl = this.currentUrl;
+    
+    if (this.recordedGuide && this.recordedGuide.steps.length > 0) {
+      stepsToSave = this.recordedGuide.steps;
+      taskName = name;
+      startUrl = this.recordedGuide.startUrl;
+    }
+    
+    const guide = {
+      id: Date.now().toString(),
+      name: name,
+      task: taskName,
+      category: category,
+      steps: stepsToSave,
+      url: startUrl,
+      createdAt: new Date().toISOString(),
+      isRecorded: !!this.recordedGuide
+    };
+    
+    try {
+      // Get existing guides
+      const result = await chrome.storage.local.get(['savedGuides']);
+      const guides = result.savedGuides || [];
+      guides.push(guide);
+      
+      // Save updated guides
+      await chrome.storage.local.set({ savedGuides: guides });
+      
+      this.showStatus('Guide saved successfully!', 'success');
+      this.hideSaveMacroModal();
+      
+      // Clear recorded guide
+      this.recordedGuide = null;
+      
+    } catch (error) {
+      console.error('Failed to save guide:', error);
+      this.showStatus('Failed to save guide', 'error');
+    }
   }
 }
 

@@ -9,8 +9,13 @@ class GuideMeContent {
     this.totalStepsCompleted = 0; // Total steps done in this session
     this.isMultiPageTask = false; // Flag for multi-page tasks
     this.isSavedGuideReplay = false; // Flag for replaying saved guides (no AI)
+    this.isRecordedGuide = false; // Flag for recorded guides
+    this.savedGuideId = null; // ID of saved guide being played (for edit persistence)
+    this.guideWasEdited = false; // Track if any edits were made during replay
     this.isFinalStepBatch = false; // Flag when AI says this is the last batch
     this.allStepsForSaving = []; // Store ALL steps for auto-save
+    this.allOriginalSteps = null; // All original steps for saved guide replay
+    this.originalStepIndex = 0; // Position in original steps (for multi-page)
     this.visitedUrls = []; // Track visited URLs to detect back navigation
     this.highlightColor = '#4F46E5';
     this.overlayElements = [];
@@ -34,6 +39,15 @@ class GuideMeContent {
     // Voice overlay tracking (recognition runs in offscreen document)
     this.voiceOverlayVisible = false;
     
+    // ========== RECORDING MODE ==========
+    this.isRecording = false;
+    this.recordedSteps = [];
+    this.recordingStartUrl = '';
+    this.recordingStartTime = null;
+    this.recordingClickHandler = null;
+    this.recordingInputHandler = null;
+    this.recordingOverlay = null;
+    
     this.init();
   }
 
@@ -55,6 +69,9 @@ class GuideMeContent {
 
     // Check for saved guide state on page load (for cross-page navigation)
     this.checkForSavedGuide();
+    
+    // Check for active recording session (cross-page)
+    this.checkForActiveRecording();
   }
   
   setupKeyboardShortcuts() {
@@ -242,13 +259,21 @@ class GuideMeContent {
       console.log('GuideMe: Remaining steps:', guideState.remainingSteps?.length || 0);
       console.log('GuideMe: Restored allStepsForSaving:', guideState.allStepsForSaving?.length || 0);
       console.log('GuideMe: Restored continuationCount:', guideState.continuationCount || 0);
+      console.log('GuideMe: Restored savedGuideId:', guideState.savedGuideId || 'none');
       
       this.originalTask = guideState.task;
       this.highlightColor = guideState.highlightColor || '#4F46E5';
       this.completedSteps = guideState.completedSteps || [];
       this.isSavedGuideReplay = guideState.isSavedGuideReplay || false;
+      this.isRecordedGuide = guideState.isRecordedGuide || false;
+      this.savedGuideId = guideState.savedGuideId || null; // Restore guide ID for editing!
+      this.guideWasEdited = guideState.guideWasEdited || false; // Restore edit tracking
       this.allStepsForSaving = guideState.allStepsForSaving || [];
       this.visitedUrls = guideState.visitedUrls || [];
+      
+      // Restore full step list for recorded/saved guides
+      this.allOriginalSteps = guideState.allOriginalSteps || null;
+      this.originalStepIndex = guideState.originalStepIndex || 0;
       
       // IMPORTANT: Restore multi-page tracking state
       this.totalStepsCompleted = guideState.totalStepsCompleted || (this.allStepsForSaving?.length || 0);
@@ -264,6 +289,7 @@ class GuideMeContent {
       // Check if we have remaining steps
       if (guideState.remainingSteps && guideState.remainingSteps.length > 0) {
         console.log('GuideMe: Continuing with', guideState.remainingSteps.length, 'remaining steps');
+        console.log('GuideMe: isSavedGuideReplay:', this.isSavedGuideReplay, 'isRecordedGuide:', this.isRecordedGuide);
         this.extractDOM();
         this.currentSteps = guideState.remainingSteps;
         this.currentStepIndex = 0;
@@ -271,13 +297,13 @@ class GuideMeContent {
         this.startGuide();
         this.saveGuideState();
       } else if (!this.isSavedGuideReplay) {
-        // Live guide needs AI - but only if forward navigation
+        // Live AI guide needs continuation
         console.log('GuideMe: Requesting AI for new page (continuation:', this.continuationCount, ')');
-        this.isMultiPageTask = true; // Mark as multi-page since we're continuing
+        this.isMultiPageTask = true;
         this.requestGuideContinuation();
       } else {
-        // Saved guide with no remaining steps = complete
-        console.log('GuideMe: Saved guide completed');
+        // Saved/recorded guide with no remaining steps = complete
+        console.log('GuideMe: Saved guide completed (all steps done)');
         this.showTaskCompleted();
       }
     } catch (error) {
@@ -305,6 +331,12 @@ class GuideMeContent {
     console.log('GuideMe: currentHighlightedElement:', this.currentHighlightedElement ? 'EXISTS' : 'NULL');
     console.log('GuideMe: isSavedGuideReplay:', this.isSavedGuideReplay);
     console.log('GuideMe: allStepsForSaving before:', (this.allStepsForSaving || []).length);
+    
+    // Update position in original steps for saved guide replays
+    if (this.isSavedGuideReplay && this.allOriginalSteps) {
+      this.originalStepIndex = (this.originalStepIndex || 0) + 1;
+      console.log('GuideMe: Updated originalStepIndex to', this.originalStepIndex, 'of', this.allOriginalSteps.length);
+    }
     
     if (completedStep) {
       // CRITICAL: Capture robust selectors NOW while element is in DOM
@@ -358,7 +390,7 @@ class GuideMeContent {
   }
 
   async saveStateForNavigation() {
-    // Calculate remaining steps (steps after current one)
+    // Calculate remaining steps (steps after current one in current batch)
     const remainingSteps = this.currentSteps.slice(this.currentStepIndex + 1);
     
     // Mark current URL as visited
@@ -368,6 +400,15 @@ class GuideMeContent {
     // This should count all steps done across all pages
     const totalCompleted = (this.allStepsForSaving || []).length;
     
+    // For recorded/saved guides, calculate remaining from ALL original steps
+    let allRemainingSteps = remainingSteps;
+    if (this.isSavedGuideReplay && this.allOriginalSteps) {
+      // Find current position in original steps
+      const currentOriginalIndex = this.originalStepIndex || 0;
+      allRemainingSteps = this.allOriginalSteps.slice(currentOriginalIndex + 1);
+      console.log('GuideMe: Saved guide - remaining from original:', allRemainingSteps.length, 'of', this.allOriginalSteps.length);
+    }
+    
     // Save state immediately for potential navigation
     const guideState = {
       task: this.originalTask,
@@ -376,8 +417,13 @@ class GuideMeContent {
       pageUrl: '', // Clear so new page triggers continuation
       savedAt: Date.now(),
       // Save remaining steps and replay flag to avoid AI calls on saved guides
-      remainingSteps: remainingSteps,
+      remainingSteps: allRemainingSteps,
       isSavedGuideReplay: this.isSavedGuideReplay,
+      isRecordedGuide: this.isRecordedGuide || false,
+      savedGuideId: this.savedGuideId || null, // CRITICAL: Preserve guide ID for editing!
+      guideWasEdited: this.guideWasEdited || false, // Preserve edit tracking
+      allOriginalSteps: this.allOriginalSteps || null, // Preserve full step list
+      originalStepIndex: (this.originalStepIndex || 0) + 1, // Next step position
       allStepsForSaving: this.allStepsForSaving || [],
       visitedUrls: this.visitedUrls || [],
       totalStepsCompleted: totalCompleted, // Track multi-page progress
@@ -385,7 +431,7 @@ class GuideMeContent {
       isMultiPageTask: this.isMultiPageTask || false
     };
     
-    console.log('GuideMe: saveStateForNavigation - total steps:', totalCompleted, 'continuations:', this.continuationCount);
+    console.log('GuideMe: saveStateForNavigation - total steps:', totalCompleted, 'continuations:', this.continuationCount, 'guideId:', this.savedGuideId);
     
     // Save to BOTH storages for maximum reliability
     // chrome.storage.local is shared across tabs, localStorage is per-origin
@@ -921,7 +967,14 @@ class GuideMeContent {
   async saveGuideState() {
     try {
       // Calculate remaining steps for cross-page continuation
-      const remainingSteps = this.currentSteps.slice(this.currentStepIndex + 1);
+      let remainingSteps = this.currentSteps.slice(this.currentStepIndex + 1);
+      
+      // For saved/recorded guides, calculate remaining from ALL original steps
+      if (this.isSavedGuideReplay && this.allOriginalSteps) {
+        const currentOriginalIndex = this.originalStepIndex || 0;
+        remainingSteps = this.allOriginalSteps.slice(currentOriginalIndex);
+        console.log('GuideMe: Saved guide - remaining:', remainingSteps.length, 'of', this.allOriginalSteps.length);
+      }
       
       await chrome.storage.local.set({
         activeGuide: {
@@ -935,11 +988,41 @@ class GuideMeContent {
           // Include remaining steps and flags for cross-page continuation
           remainingSteps: remainingSteps,
           isSavedGuideReplay: this.isSavedGuideReplay || false,
+          isRecordedGuide: this.isRecordedGuide || false,
+          savedGuideId: this.savedGuideId || null, // CRITICAL for edit persistence!
+          guideWasEdited: this.guideWasEdited || false, // Track if edits were made
+          allOriginalSteps: this.allOriginalSteps || null,
+          originalStepIndex: this.originalStepIndex || 0,
           allStepsForSaving: this.allStepsForSaving || [],
-          visitedUrls: this.visitedUrls || []
+          visitedUrls: this.visitedUrls || [],
+          totalStepsCompleted: (this.allStepsForSaving || []).length,
+          continuationCount: this.continuationCount || 0,
+          isMultiPageTask: this.isMultiPageTask || false
         }
       });
-      console.log('GuideMe: Guide state saved, remaining steps:', remainingSteps.length);
+      
+      // Also save to localStorage as backup (more reliable for navigation)
+      try {
+        localStorage.setItem('guideme_backup', JSON.stringify({
+          task: this.originalTask,
+          completedSteps: this.completedSteps || [],
+          highlightColor: this.highlightColor,
+          savedAt: Date.now(),
+          remainingSteps: remainingSteps,
+          isSavedGuideReplay: this.isSavedGuideReplay || false,
+          isRecordedGuide: this.isRecordedGuide || false,
+          savedGuideId: this.savedGuideId || null, // CRITICAL: Save guide ID for edit persistence!
+          guideWasEdited: this.guideWasEdited || false, // Track if edits were made
+          allOriginalSteps: this.allOriginalSteps || null,
+          originalStepIndex: this.originalStepIndex || 0,
+          allStepsForSaving: this.allStepsForSaving || [],
+          visitedUrls: this.visitedUrls || []
+        }));
+      } catch (e) {
+        console.log('GuideMe: localStorage backup failed:', e);
+      }
+      
+      console.log('GuideMe: Guide state saved, remaining steps:', remainingSteps.length, 'isSavedGuide:', this.isSavedGuideReplay, 'guideId:', this.savedGuideId);
     } catch (error) {
       console.error('GuideMe: Failed to save guide state', error);
     }
@@ -975,7 +1058,24 @@ class GuideMeContent {
         this.currentStepIndex = 0;
         this.originalTask = message.payload.task || '';
         this.isSavedGuideReplay = message.payload.isMacro || message.payload.isSavedGuide || false;
+        this.isRecordedGuide = message.payload.isRecorded || false;
+        this.savedGuideId = message.payload.guideId || null; // Store guide ID for editing
+        this.guideWasEdited = false; // Reset edit flag for new guide
         this.isFinalStepBatch = false; // Reset - AI will tell us when we're on final batch
+        
+        console.log('GuideMe: START_GUIDE received');
+        console.log('GuideMe: guideId:', this.savedGuideId);
+        console.log('GuideMe: isSavedGuideReplay:', this.isSavedGuideReplay);
+        
+        // For saved/recorded guides, store ALL original steps for multi-page navigation
+        if (this.isSavedGuideReplay) {
+          this.allOriginalSteps = [...message.payload.steps];
+          this.originalStepIndex = 0; // Reset position tracking
+          console.log('GuideMe: Stored all', this.allOriginalSteps.length, 'original steps for replay');
+        } else {
+          this.allOriginalSteps = null;
+          this.originalStepIndex = 0;
+        }
         
         // IMPORTANT: Start with EMPTY allStepsForSaving
         // Steps will be added WITH robust selectors as user completes them
@@ -984,6 +1084,7 @@ class GuideMeContent {
         
         console.log('GuideMe: Starting guide with', this.currentSteps.length, 'steps');
         console.log('GuideMe: Is saved guide replay:', this.isSavedGuideReplay);
+        console.log('GuideMe: Is recorded guide:', this.isRecordedGuide);
         console.log('GuideMe: Steps descriptions:', this.currentSteps.map(s => s.description?.substring(0, 30)));
         
         // For saved guide replays, we need to re-scan DOM first!
@@ -1003,6 +1104,52 @@ class GuideMeContent {
         this.highlightStep(this.currentStepIndex);
         this.updateControlPanel();
         this.saveGuideState(); // Save updated step
+        sendResponse({ success: true });
+        break;
+      
+      case 'UPDATE_STEPS':
+        // Update steps from popup (after edit/delete)
+        if (message.payload.steps) {
+          // For saved guide replays, the popup sends ALL original steps
+          // We should update allOriginalSteps (full guide) but be careful with currentSteps
+          if (this.isSavedGuideReplay && this.allOriginalSteps) {
+            // Update the full guide array
+            this.allOriginalSteps = [...message.payload.steps];
+            
+            // Update currentSteps based on our position
+            // If we're mid-guide, currentSteps might be a subset
+            // Rebuild currentSteps from allOriginalSteps starting at originalStepIndex
+            const startIdx = this.originalStepIndex || 0;
+            this.currentSteps = this.allOriginalSteps.slice(startIdx);
+            
+            console.log('GuideMe: Updated allOriginalSteps from popup, total:', this.allOriginalSteps.length);
+            console.log('GuideMe: Rebuilt currentSteps starting at', startIdx, ', count:', this.currentSteps.length);
+          } else {
+            // Non-saved guide or simple case
+            this.currentSteps = message.payload.steps;
+          }
+        }
+        if (typeof message.payload.currentStepIndex === 'number') {
+          // For saved guide replays, we need to adjust the index
+          // The popup sends the index into allOriginalSteps
+          // We need the index into currentSteps
+          if (this.isSavedGuideReplay && this.originalStepIndex) {
+            const fullIndex = message.payload.currentStepIndex;
+            const localIndex = fullIndex - this.originalStepIndex;
+            this.currentStepIndex = Math.max(0, localIndex);
+            console.log('GuideMe: Adjusted currentStepIndex from', fullIndex, 'to', this.currentStepIndex);
+          } else {
+            this.currentStepIndex = message.payload.currentStepIndex;
+          }
+        }
+        // Mark that edits were made (from popup)
+        if (message.payload.wasEdited) {
+          this.guideWasEdited = true;
+          console.log('GuideMe: Marked guide as edited from popup');
+        }
+        this.updateControlPanel();
+        this.highlightStep(this.currentStepIndex);
+        this.saveGuideState();
         sendResponse({ success: true });
         break;
       
@@ -1049,16 +1196,563 @@ class GuideMeContent {
       
       case 'GET_CURRENT_GUIDE_DATA':
         // Return current guide data for saving
+        // For saved guides, return allOriginalSteps (complete guide) + current position info
         sendResponse({
           task: this.originalTask,
           steps: this.currentSteps,
+          allOriginalSteps: this.allOriginalSteps || null, // Full guide for proper editing
           currentStepIndex: this.currentStepIndex,
-          url: window.location.href
+          originalStepIndex: this.originalStepIndex || 0, // Position in full guide
+          url: window.location.href,
+          savedGuideId: this.savedGuideId || null,
+          isSavedGuideReplay: this.isSavedGuideReplay || false,
+          isRecordedGuide: this.isRecordedGuide || false
         });
+        break;
+      
+      // ========== RECORDING MODE MESSAGES ==========
+      case 'START_RECORDING':
+        this.startRecording();
+        sendResponse({ success: true });
+        break;
+        
+      case 'STOP_RECORDING':
+        const recordedData = this.stopRecording();
+        sendResponse({ success: true, data: recordedData });
+        break;
+        
+      case 'GET_RECORDING_STATUS':
+        sendResponse({ 
+          isRecording: this.isRecording,
+          stepCount: this.recordedSteps.length,
+          startUrl: this.recordingStartUrl
+        });
+        break;
+        
+      case 'PAUSE_RECORDING':
+        this.pauseRecording();
+        sendResponse({ success: true });
+        break;
+        
+      case 'RESUME_RECORDING':
+        this.resumeRecording();
+        sendResponse({ success: true });
         break;
       
       default:
         sendResponse({ error: 'Unknown message type' });
+    }
+  }
+
+  // ========== GUIDE RECORDING MODE ==========
+  // Record user actions to create perfect guides with real selectors
+  
+  async checkForActiveRecording() {
+    try {
+      const result = await chrome.storage.local.get(['activeRecording']);
+      if (result.activeRecording && result.activeRecording.isRecording) {
+        console.log('GuideMe: Found active recording session, resuming...');
+        this.recordedSteps = result.activeRecording.steps || [];
+        this.recordingStartUrl = result.activeRecording.startUrl;
+        this.recordingStartTime = result.activeRecording.startTime;
+        this.isRecording = true;
+        
+        // Mark page navigation as a step
+        if (this.recordedSteps.length > 0) {
+          const lastStep = this.recordedSteps[this.recordedSteps.length - 1];
+          if (lastStep.causesNavigation && window.location.href !== lastStep.pageUrl) {
+            // We navigated! Record the new page context
+            console.log('GuideMe: Page changed during recording');
+          }
+        }
+        
+        this.setupRecordingListeners();
+        this.showRecordingOverlay();
+      }
+    } catch (e) {
+      console.log('GuideMe: No active recording to resume');
+    }
+  }
+  
+  startRecording() {
+    if (this.isRecording) {
+      console.log('GuideMe: Already recording');
+      return;
+    }
+    
+    // Stop any active guide
+    if (this.isGuideActive) {
+      this.stopGuide();
+    }
+    
+    console.log('GuideMe: 🔴 Starting recording mode');
+    this.isRecording = true;
+    this.recordedSteps = [];
+    this.recordingStartUrl = window.location.href;
+    this.recordingStartTime = Date.now();
+    
+    // Save recording state for cross-page persistence
+    this.saveRecordingState();
+    
+    // Setup event listeners
+    this.setupRecordingListeners();
+    
+    // Show recording indicator
+    this.showRecordingOverlay();
+  }
+  
+  setupRecordingListeners() {
+    // Click handler - capture all clicks
+    this.recordingClickHandler = (e) => {
+      if (!this.isRecording) return;
+      
+      // Ignore clicks on our own overlay
+      if (e.target.closest('#guideme-recording-overlay')) return;
+      if (e.target.closest('#guideme-control-panel')) return;
+      
+      const element = e.target;
+      
+      // Check if this click will cause navigation
+      const isLink = element.closest('a[href]');
+      const isSubmit = element.closest('button[type="submit"], input[type="submit"]');
+      const willNavigate = !!(isLink && !isLink.href.startsWith('javascript:') && !isLink.href.startsWith('#'));
+      
+      // Generate robust selectors for this element
+      const selectors = this.generateRobustSelectors(element);
+      const elementText = this.getElementText(element);
+      
+      // Determine action type
+      let actionType = 'click';
+      if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.tagName === 'SELECT') {
+        actionType = 'focus'; // We'll capture the value on blur/change
+      }
+      
+      const step = {
+        id: this.recordedSteps.length + 1,
+        action: actionType,
+        description: this.generateStepDescription(element, actionType),
+        element: element.tagName.toLowerCase(),
+        text: elementText?.substring(0, 60) || '',
+        robustSelectors: selectors,
+        pageUrl: window.location.href,
+        pageTitle: document.title,
+        timestamp: Date.now(),
+        causesNavigation: willNavigate,
+        viewport: {
+          x: e.clientX,
+          y: e.clientY
+        }
+      };
+      
+      console.log('GuideMe: 📍 Recorded step', step.id, '-', step.description);
+      this.recordedSteps.push(step);
+      
+      // Update overlay
+      this.updateRecordingOverlay();
+      
+      // Save state (for cross-page)
+      if (willNavigate) {
+        this.saveRecordingState();
+      } else {
+        // Debounce saves for non-navigation clicks
+        clearTimeout(this.recordingSaveTimeout);
+        this.recordingSaveTimeout = setTimeout(() => this.saveRecordingState(), 500);
+      }
+    };
+    
+    // Input handler - capture text input
+    this.recordingInputHandler = (e) => {
+      if (!this.isRecording) return;
+      
+      const element = e.target;
+      if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName)) return;
+      
+      // Ignore password fields for privacy
+      if (element.type === 'password') {
+        console.log('GuideMe: Skipping password field for privacy');
+        return;
+      }
+      
+      // Check if we already have a focus step for this element
+      const existingStepIndex = this.recordedSteps.findIndex(s => 
+        s.action === 'focus' && 
+        s.robustSelectors?.name === element.name &&
+        s.pageUrl === window.location.href
+      );
+      
+      const value = element.value;
+      const selectors = this.generateRobustSelectors(element);
+      
+      if (existingStepIndex >= 0) {
+        // Update existing step with the typed value
+        this.recordedSteps[existingStepIndex].action = element.tagName === 'SELECT' ? 'select' : 'type';
+        this.recordedSteps[existingStepIndex].value = value;
+        this.recordedSteps[existingStepIndex].description = this.generateStepDescription(element, 'type', value);
+      } else {
+        // Create new input step
+        const step = {
+          id: this.recordedSteps.length + 1,
+          action: element.tagName === 'SELECT' ? 'select' : 'type',
+          description: this.generateStepDescription(element, 'type', value),
+          element: element.tagName.toLowerCase(),
+          value: value,
+          robustSelectors: selectors,
+          pageUrl: window.location.href,
+          pageTitle: document.title,
+          timestamp: Date.now()
+        };
+        
+        console.log('GuideMe: ⌨️ Recorded input -', step.description);
+        this.recordedSteps.push(step);
+      }
+      
+      this.updateRecordingOverlay();
+      this.saveRecordingState();
+    };
+    
+    // Add listeners
+    document.addEventListener('click', this.recordingClickHandler, true);
+    document.addEventListener('change', this.recordingInputHandler, true);
+    document.addEventListener('blur', this.recordingInputHandler, true);
+    
+    console.log('GuideMe: Recording listeners attached');
+  }
+  
+  generateStepDescription(element, action, value = null) {
+    const text = this.getElementText(element)?.substring(0, 40) || '';
+    const tag = element.tagName.toLowerCase();
+    const type = element.type || '';
+    const placeholder = element.placeholder || '';
+    const ariaLabel = element.getAttribute('aria-label') || '';
+    const name = element.name || '';
+    
+    // Determine what to call this element
+    let elementName = text || ariaLabel || placeholder || name || tag;
+    elementName = elementName.trim();
+    
+    if (action === 'click') {
+      if (tag === 'button' || element.getAttribute('role') === 'button') {
+        return `Click the "${elementName}" button`;
+      } else if (tag === 'a') {
+        return `Click the "${elementName}" link`;
+      } else if (tag === 'input' && type === 'checkbox') {
+        return element.checked ? `Check "${elementName}"` : `Uncheck "${elementName}"`;
+      } else if (tag === 'input' && type === 'radio') {
+        return `Select "${elementName}" option`;
+      } else if (element.getAttribute('role') === 'tab') {
+        return `Click the "${elementName}" tab`;
+      } else if (element.getAttribute('role') === 'menuitem') {
+        return `Click "${elementName}" in the menu`;
+      } else {
+        return `Click on "${elementName}"`;
+      }
+    } else if (action === 'type' || action === 'input') {
+      if (value) {
+        const displayValue = value.length > 20 ? value.substring(0, 20) + '...' : value;
+        return `Type "${displayValue}" in the ${elementName || 'input field'}`;
+      }
+      return `Enter text in the ${elementName || 'input field'}`;
+    } else if (action === 'select') {
+      return `Select "${value || 'option'}" from ${elementName || 'dropdown'}`;
+    } else if (action === 'focus') {
+      return `Click on the ${elementName || 'input field'}`;
+    }
+    
+    return `Interact with ${elementName || 'element'}`;
+  }
+  
+  removeRecordingListeners() {
+    if (this.recordingClickHandler) {
+      document.removeEventListener('click', this.recordingClickHandler, true);
+      this.recordingClickHandler = null;
+    }
+    if (this.recordingInputHandler) {
+      document.removeEventListener('change', this.recordingInputHandler, true);
+      document.removeEventListener('blur', this.recordingInputHandler, true);
+      this.recordingInputHandler = null;
+    }
+  }
+  
+  stopRecording() {
+    if (!this.isRecording) {
+      return { steps: [], startUrl: '' };
+    }
+    
+    console.log('GuideMe: ⏹️ Stopping recording -', this.recordedSteps.length, 'steps captured');
+    
+    this.isRecording = false;
+    this.removeRecordingListeners();
+    this.hideRecordingOverlay();
+    
+    // Clear saved state
+    chrome.storage.local.remove(['activeRecording']);
+    
+    const result = {
+      steps: this.recordedSteps,
+      startUrl: this.recordingStartUrl,
+      duration: Date.now() - this.recordingStartTime,
+      endUrl: window.location.href
+    };
+    
+    // Reset
+    this.recordedSteps = [];
+    this.recordingStartUrl = '';
+    this.recordingStartTime = null;
+    
+    return result;
+  }
+  
+  pauseRecording() {
+    if (!this.isRecording) return;
+    this.removeRecordingListeners();
+    this.updateRecordingOverlay('paused');
+    console.log('GuideMe: ⏸️ Recording paused');
+  }
+  
+  resumeRecording() {
+    if (!this.isRecording) return;
+    this.setupRecordingListeners();
+    this.updateRecordingOverlay();
+    console.log('GuideMe: ▶️ Recording resumed');
+  }
+  
+  async saveRecordingState() {
+    try {
+      await chrome.storage.local.set({
+        activeRecording: {
+          isRecording: this.isRecording,
+          steps: this.recordedSteps,
+          startUrl: this.recordingStartUrl,
+          startTime: this.recordingStartTime
+        }
+      });
+    } catch (e) {
+      console.error('GuideMe: Failed to save recording state', e);
+    }
+  }
+  
+  showRecordingOverlay() {
+    this.hideRecordingOverlay();
+    
+    const overlay = document.createElement('div');
+    overlay.id = 'guideme-recording-overlay';
+    overlay.innerHTML = `
+      <div class="guideme-recording-badge">
+        <div class="guideme-recording-dot"></div>
+        <span class="guideme-recording-text">Recording</span>
+        <span class="guideme-recording-count">0 steps</span>
+        <button class="guideme-recording-stop" title="Stop recording">⏹</button>
+      </div>
+      <style>
+        #guideme-recording-overlay {
+          position: fixed;
+          top: 16px;
+          right: 16px;
+          z-index: 2147483647;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          animation: guideme-slide-in 0.3s ease;
+        }
+        
+        @keyframes guideme-slide-in {
+          from { transform: translateY(-20px); opacity: 0; }
+          to { transform: translateY(0); opacity: 1; }
+        }
+        
+        .guideme-recording-badge {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+          color: white;
+          padding: 10px 16px;
+          border-radius: 24px;
+          box-shadow: 0 4px 20px rgba(220, 38, 38, 0.4);
+          font-size: 14px;
+          font-weight: 600;
+        }
+        
+        .guideme-recording-dot {
+          width: 10px;
+          height: 10px;
+          background: white;
+          border-radius: 50%;
+          animation: guideme-pulse-dot 1s ease-in-out infinite;
+        }
+        
+        @keyframes guideme-pulse-dot {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.5; transform: scale(0.8); }
+        }
+        
+        .guideme-recording-count {
+          background: rgba(255,255,255,0.2);
+          padding: 2px 8px;
+          border-radius: 12px;
+          font-size: 12px;
+        }
+        
+        .guideme-recording-stop {
+          background: rgba(255,255,255,0.2);
+          border: none;
+          color: white;
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 14px;
+          transition: background 0.2s;
+        }
+        
+        .guideme-recording-stop:hover {
+          background: rgba(255,255,255,0.3);
+        }
+        
+        .guideme-recording-badge.paused {
+          background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+          box-shadow: 0 4px 20px rgba(245, 158, 11, 0.4);
+        }
+        
+        .guideme-recording-badge.paused .guideme-recording-dot {
+          animation: none;
+          background: #fef3c7;
+        }
+        
+        .guideme-recording-badge.paused .guideme-recording-text::after {
+          content: ' (Paused)';
+        }
+      </style>
+    `;
+    
+    document.body.appendChild(overlay);
+    this.recordingOverlay = overlay;
+    
+    // Bind stop button
+    overlay.querySelector('.guideme-recording-stop').addEventListener('click', async () => {
+      const data = this.stopRecording();
+      
+      // Store completed recording in storage so popup can retrieve it
+      await chrome.storage.local.set({ 
+        completedRecording: {
+          ...data,
+          completedAt: Date.now()
+        }
+      });
+      
+      // Show completion notification
+      this.showRecordingCompleteNotification(data.steps.length);
+      
+      // Notify popup that recording stopped (if open)
+      try {
+        await chrome.runtime.sendMessage({ 
+          type: 'RECORDING_STOPPED', 
+          payload: data 
+        });
+      } catch (e) {
+        // Popup might be closed - data is in storage
+        console.log('GuideMe: Recording saved to storage, open popup to save guide');
+      }
+    });
+  }
+  
+  showRecordingCompleteNotification(stepCount) {
+    const notification = document.createElement('div');
+    notification.id = 'guideme-recording-complete';
+    notification.innerHTML = `
+      <div class="guideme-complete-badge">
+        <span class="guideme-complete-icon">✓</span>
+        <div class="guideme-complete-text">
+          <strong>${stepCount} steps recorded!</strong>
+          <span>Open GuideMe extension to save your guide</span>
+        </div>
+      </div>
+      <style>
+        #guideme-recording-complete {
+          position: fixed;
+          top: 16px;
+          right: 16px;
+          z-index: 2147483647;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          animation: guideme-slide-in 0.3s ease;
+        }
+        
+        .guideme-complete-badge {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+          color: white;
+          padding: 12px 20px;
+          border-radius: 12px;
+          box-shadow: 0 4px 20px rgba(34, 197, 94, 0.4);
+        }
+        
+        .guideme-complete-icon {
+          font-size: 24px;
+          background: rgba(255,255,255,0.2);
+          width: 36px;
+          height: 36px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        
+        .guideme-complete-text {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        
+        .guideme-complete-text strong {
+          font-size: 15px;
+        }
+        
+        .guideme-complete-text span {
+          font-size: 12px;
+          opacity: 0.9;
+        }
+      </style>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+      notification.style.animation = 'guideme-slide-out 0.3s ease forwards';
+      const style = document.createElement('style');
+      style.textContent = `
+        @keyframes guideme-slide-out {
+          from { transform: translateY(0); opacity: 1; }
+          to { transform: translateY(-20px); opacity: 0; }
+        }
+      `;
+      document.head.appendChild(style);
+      setTimeout(() => notification.remove(), 300);
+    }, 5000);
+  }
+  
+  updateRecordingOverlay(state = 'recording') {
+    if (!this.recordingOverlay) return;
+    
+    const badge = this.recordingOverlay.querySelector('.guideme-recording-badge');
+    const countEl = this.recordingOverlay.querySelector('.guideme-recording-count');
+    
+    if (countEl) {
+      countEl.textContent = `${this.recordedSteps.length} step${this.recordedSteps.length !== 1 ? 's' : ''}`;
+    }
+    
+    if (badge) {
+      badge.classList.toggle('paused', state === 'paused');
+    }
+  }
+  
+  hideRecordingOverlay() {
+    if (this.recordingOverlay) {
+      this.recordingOverlay.remove();
+      this.recordingOverlay = null;
     }
   }
 
@@ -1508,29 +2202,110 @@ class GuideMeContent {
     panel.id = 'guideme-control-panel';
     panel.innerHTML = `
       <div class="guideme-panel-header">
-        <span class="guideme-logo">🎯 GuideMe</span>
+        <div class="guideme-logo">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <circle cx="12" cy="12" r="6"/>
+            <circle cx="12" cy="12" r="2"/>
+            <line x1="12" y1="2" x2="12" y2="6"/>
+            <line x1="12" y1="18" x2="12" y2="22"/>
+            <line x1="2" y1="12" x2="6" y2="12"/>
+            <line x1="18" y1="12" x2="22" y2="12"/>
+          </svg>
+          <span>GuideMe</span>
+        </div>
         <div class="guideme-header-actions">
-          <button class="guideme-save-btn" title="Save this guide for later">💾</button>
-          <button class="guideme-close-btn" title="Close guide">✕</button>
+          <button class="guideme-save-btn" title="Save this guide for later">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+              <polyline points="17 21 17 13 7 13 7 21"/>
+              <polyline points="7 3 7 8 15 8"/>
+            </svg>
+          </button>
+          <button class="guideme-close-btn" title="Close guide">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+            </svg>
+          </button>
         </div>
       </div>
       <div class="guideme-panel-content">
         <div class="guideme-step-info">
           <span class="guideme-step-number">Step 1 of ${this.currentSteps.length}</span>
-          <button class="guideme-refresh-btn" title="Can't find element? Click to re-scan page">🔄</button>
+          <div class="guideme-step-actions">
+            <button class="guideme-edit-btn" title="Edit step description">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+              </svg>
+            </button>
+            <button class="guideme-delete-step-btn" title="Delete this step">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+              </svg>
+            </button>
+            <button class="guideme-refresh-btn" title="Can't find element? Click to re-scan page">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                <path d="M3 3v5h5"/>
+                <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+                <path d="M16 16h5v5"/>
+              </svg>
+            </button>
+          </div>
         </div>
         <p class="guideme-instruction"></p>
         <p class="guideme-hint"></p>
-        <p class="guideme-not-found" style="display:none;color:#f59e0b;font-size:12px;">Element not found. Open any dropdowns, then click 🔄 to re-scan.</p>
+        <p class="guideme-not-found" style="display:none;">Element not found. Open any dropdowns, then click refresh to re-scan.</p>
       </div>
       <div class="guideme-panel-controls">
-        <button class="guideme-prev-btn" disabled>← Prev</button>
-        <button class="guideme-next-btn">Next →</button>
+        <button class="guideme-prev-btn" disabled>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>
+          </svg>
+          Prev
+        </button>
+        <button class="guideme-next-btn">
+          Next
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>
+          </svg>
+        </button>
       </div>
       <div class="guideme-progress-bar">
         <div class="guideme-progress-fill"></div>
       </div>
-      <button class="guideme-exit-btn">🚪 Exit Tutorial</button>
+      <button class="guideme-exit-btn">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+          <polyline points="16 17 21 12 16 7"/>
+          <line x1="21" x2="9" y1="12" y2="12"/>
+        </svg>
+        Exit Tutorial
+      </button>
+      
+      <!-- Edit Step Inline Modal -->
+      <div class="guideme-edit-modal" style="display:none;">
+        <div class="guideme-edit-modal-header">
+          <h3>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+            </svg>
+            Edit Step
+          </h3>
+          <button class="guideme-edit-modal-close">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+            </svg>
+          </button>
+        </div>
+        <div class="guideme-edit-modal-body">
+          <textarea class="guideme-edit-input" rows="3" placeholder="Step description..."></textarea>
+        </div>
+        <div class="guideme-edit-actions">
+          <button class="guideme-edit-cancel">Cancel</button>
+          <button class="guideme-edit-save">Save</button>
+        </div>
+      </div>
     `;
 
     document.body.appendChild(panel);
@@ -1547,6 +2322,13 @@ class GuideMeContent {
         this.stopGuide();
       }
     });
+    
+    // Edit step events
+    panel.querySelector('.guideme-edit-btn').addEventListener('click', () => this.showInlineEditModal());
+    panel.querySelector('.guideme-delete-step-btn').addEventListener('click', () => this.deleteCurrentStep());
+    panel.querySelector('.guideme-edit-cancel').addEventListener('click', () => this.hideInlineEditModal());
+    panel.querySelector('.guideme-edit-save').addEventListener('click', () => this.saveInlineEdit());
+    panel.querySelector('.guideme-edit-modal-close')?.addEventListener('click', () => this.hideInlineEditModal());
 
     // Make panel draggable
     this.makeDraggable(panel);
@@ -1700,6 +2482,193 @@ class GuideMeContent {
     } else {
       progressBar.style.animation = 'none';
     }
+  }
+  
+  // ============ INLINE STEP EDITING (in floating panel) ============
+  
+  showInlineEditModal() {
+    const step = this.currentSteps[this.currentStepIndex];
+    if (!step) return;
+    
+    const modal = this.controlPanel?.querySelector('.guideme-edit-modal');
+    const input = this.controlPanel?.querySelector('.guideme-edit-input');
+    if (modal && input) {
+      input.value = step.description || step.instruction || '';
+      modal.style.display = 'flex';
+      input.focus();
+      input.select();
+    }
+  }
+  
+  hideInlineEditModal() {
+    const modal = this.controlPanel?.querySelector('.guideme-edit-modal');
+    if (modal) {
+      modal.style.display = 'none';
+    }
+  }
+  
+  async saveInlineEdit() {
+    const input = this.controlPanel?.querySelector('.guideme-edit-input');
+    const newDescription = input?.value?.trim();
+    
+    if (!newDescription) {
+      input.style.borderColor = '#dc2626';
+      return;
+    }
+    
+    console.log('GuideMe: saveInlineEdit - currentStepIndex:', this.currentStepIndex);
+    console.log('GuideMe: saveInlineEdit - savedGuideId:', this.savedGuideId);
+    console.log('GuideMe: saveInlineEdit - isSavedGuideReplay:', this.isSavedGuideReplay);
+    
+    // Update current step
+    this.currentSteps[this.currentStepIndex].description = newDescription;
+    this.currentSteps[this.currentStepIndex].instruction = newDescription;
+    
+    // For saved guide replays, we need to update the SAME step in allOriginalSteps
+    // The mapping depends on where we are in the guide
+    if (this.isSavedGuideReplay && this.allOriginalSteps) {
+      // Calculate the actual index in the original steps array
+      // originalStepIndex tracks how many steps have been completed across pages
+      // currentStepIndex is the current position in the visible steps
+      const actualIndex = (this.originalStepIndex || 0) + this.currentStepIndex;
+      console.log('GuideMe: Updating allOriginalSteps at index:', actualIndex);
+      
+      if (this.allOriginalSteps[actualIndex]) {
+        this.allOriginalSteps[actualIndex].description = newDescription;
+        this.allOriginalSteps[actualIndex].instruction = newDescription;
+      }
+    }
+    
+    // Persist to storage if this is a saved guide
+    if (this.savedGuideId) {
+      this.guideWasEdited = true; // Mark that edits were made
+      await this.updateSavedGuideInStorage();
+    } else {
+      console.log('GuideMe: No savedGuideId, cannot persist edit');
+    }
+    
+    this.hideInlineEditModal();
+    this.updateControlPanel();
+    this.saveGuideState();
+    this.showToast('Step updated!');
+  }
+  
+  async deleteCurrentStep() {
+    // Don't allow deleting if only 1 step
+    if (this.currentSteps.length <= 1) {
+      this.showToast('Cannot delete the only step');
+      return;
+    }
+    
+    const stepDesc = this.currentSteps[this.currentStepIndex]?.description || 'this step';
+    if (!confirm(`Delete step: "${stepDesc.substring(0, 50)}"?`)) {
+      return;
+    }
+    
+    console.log('GuideMe: deleteCurrentStep - currentStepIndex:', this.currentStepIndex);
+    console.log('GuideMe: deleteCurrentStep - savedGuideId:', this.savedGuideId);
+    
+    // Calculate actual index in original steps BEFORE modifying arrays
+    const actualIndex = (this.originalStepIndex || 0) + this.currentStepIndex;
+    
+    // Remove from current steps
+    this.currentSteps.splice(this.currentStepIndex, 1);
+    
+    // Also remove from allOriginalSteps if this is a saved guide replay
+    if (this.isSavedGuideReplay && this.allOriginalSteps) {
+      console.log('GuideMe: Removing from allOriginalSteps at index:', actualIndex);
+      if (actualIndex < this.allOriginalSteps.length) {
+        this.allOriginalSteps.splice(actualIndex, 1);
+      }
+    }
+    
+    // Adjust index if needed
+    if (this.currentStepIndex >= this.currentSteps.length) {
+      this.currentStepIndex = this.currentSteps.length - 1;
+    }
+    
+    // Persist to storage if this is a saved guide
+    if (this.savedGuideId) {
+      this.guideWasEdited = true; // Mark that edits were made
+      await this.updateSavedGuideInStorage();
+    } else {
+      console.log('GuideMe: No savedGuideId, cannot persist delete');
+    }
+    
+    this.updateControlPanel();
+    this.highlightStep(this.currentStepIndex);
+    this.saveGuideState();
+    this.showToast('Step deleted!');
+  }
+  
+  async updateSavedGuideInStorage() {
+    if (!this.savedGuideId) {
+      console.log('GuideMe: updateSavedGuideInStorage - No savedGuideId');
+      return;
+    }
+    
+    try {
+      console.log('GuideMe: Updating storage for guide:', this.savedGuideId);
+      const result = await chrome.storage.local.get(['guideme_macros']);
+      const guides = result.guideme_macros || [];
+      const guideIndex = guides.findIndex(g => g.id === this.savedGuideId);
+      
+      console.log('GuideMe: Found guide at index:', guideIndex, 'of', guides.length, 'guides');
+      
+      if (guideIndex >= 0) {
+        // Use allOriginalSteps if available (has all steps), otherwise currentSteps
+        const stepsToSave = this.allOriginalSteps || this.currentSteps;
+        const stepsCopy = stepsToSave.map(s => ({...s})); // Deep copy each step
+        
+        console.log('GuideMe: Saving', stepsCopy.length, 'steps');
+        console.log('GuideMe: Step descriptions:', stepsCopy.map(s => s.description?.substring(0, 30)));
+        
+        guides[guideIndex].steps = stepsCopy;
+        guides[guideIndex].updatedAt = Date.now();
+        
+        await chrome.storage.local.set({ guideme_macros: guides });
+        
+        // Verify the save worked
+        const verify = await chrome.storage.local.get(['guideme_macros']);
+        const savedSteps = verify.guideme_macros?.[guideIndex]?.steps;
+        console.log('GuideMe: Verified saved steps count:', savedSteps?.length);
+        
+        console.log('GuideMe: ✓ Guide updated in storage successfully');
+      } else {
+        console.error('GuideMe: ✗ Guide not found in storage:', this.savedGuideId);
+      }
+    } catch (e) {
+      console.error('GuideMe: ✗ Failed to update saved guide:', e);
+    }
+  }
+  
+  showToast(message) {
+    // Remove existing toast
+    const existingToast = document.getElementById('guideme-toast');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.id = 'guideme-toast';
+    toast.textContent = message;
+    toast.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1f2937;
+      color: white;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      z-index: 2147483647;
+      animation: guideme-toast-in 0.3s ease;
+    `;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+      toast.style.animation = 'guideme-toast-out 0.3s ease forwards';
+      setTimeout(() => toast.remove(), 300);
+    }, 2000);
   }
 
   removeControlPanel() {
@@ -2026,6 +2995,14 @@ class GuideMeContent {
   async showFinalCompletion() {
     console.log('GuideMe: ===== showFinalCompletion CALLED =====');
     console.log('GuideMe: allStepsForSaving count:', (this.allStepsForSaving || []).length);
+    console.log('GuideMe: guideWasEdited:', this.guideWasEdited);
+    console.log('GuideMe: savedGuideId:', this.savedGuideId);
+    
+    // If edits were made during replay, ensure they're saved one final time
+    if (this.guideWasEdited && this.savedGuideId && this.allOriginalSteps) {
+      console.log('GuideMe: Final save of edited guide before completion');
+      await this.updateSavedGuideInStorage();
+    }
     
     // IMMEDIATELY clear all saved state to prevent re-activation on back navigation
     this.isGuideActive = false;
@@ -2618,6 +3595,137 @@ class GuideMeContent {
       style.display !== 'none' &&
       style.opacity !== '0'
     );
+  }
+  
+  // Generate robust selectors for recording mode - multiple fallback strategies
+  generateRobustSelectors(element) {
+    const selectors = {};
+    
+    // 1. data-testid (most stable for testing-aware apps)
+    const testId = element.getAttribute('data-testid') || element.getAttribute('data-test-id');
+    if (testId) {
+      selectors.dataTestId = testId;
+    }
+    
+    // 2. aria-label (semantic, usually stable)
+    const ariaLabel = element.getAttribute('aria-label');
+    if (ariaLabel) {
+      selectors.ariaLabel = ariaLabel;
+    }
+    
+    // 3. ID (if not dynamic/generated)
+    if (element.id && !element.id.match(/^[0-9]/) && !element.id.match(/^:r[0-9a-z]+:/)) {
+      // Skip IDs that look generated (like React's :r0:, :r1a2:)
+      selectors.id = element.id;
+    }
+    
+    // 4. name attribute (for forms)
+    if (element.name) {
+      selectors.name = element.name;
+    }
+    
+    // 5. Text content (very important for buttons/links)
+    const text = this.getElementText(element);
+    if (text && text.length > 0 && text.length < 100) {
+      selectors.textContent = text.trim();
+    }
+    
+    // 6. Tag name (for context)
+    selectors.tagName = element.tagName.toLowerCase();
+    
+    // 7. Role attribute
+    const role = element.getAttribute('role');
+    if (role) {
+      selectors.role = role;
+    }
+    
+    // 8. Placeholder (for inputs)
+    if (element.placeholder) {
+      selectors.placeholder = element.placeholder;
+    }
+    
+    // 9. href for links (partial, without dynamic params)
+    if (element.tagName === 'A' && element.href) {
+      // Extract meaningful path parts
+      try {
+        const url = new URL(element.href);
+        const cleanPath = url.pathname.replace(/\/[a-f0-9]{32,}/gi, '/:id')
+          .replace(/\/[0-9]+/g, '/:num');
+        selectors.hrefPath = cleanPath;
+      } catch (e) {}
+    }
+    
+    // 10. CSS selector (last resort)
+    selectors.cssSelector = this.generateCSSSelector(element);
+    
+    // 11. Parent context (for disambiguation)
+    const parent = element.closest('form, section, article, main, nav, aside, header, footer, [role="dialog"], [role="main"]');
+    if (parent && parent !== document.body) {
+      if (parent.id) {
+        selectors.parentId = parent.id;
+      } else if (parent.getAttribute('aria-label')) {
+        selectors.parentAriaLabel = parent.getAttribute('aria-label');
+      } else if (parent.tagName) {
+        selectors.parentTag = parent.tagName.toLowerCase();
+        if (parent.getAttribute('role')) {
+          selectors.parentRole = parent.getAttribute('role');
+        }
+      }
+    }
+    
+    // 12. Position hint (for lists, grids)
+    const siblings = element.parentElement?.querySelectorAll(element.tagName);
+    if (siblings && siblings.length > 1) {
+      const index = Array.from(siblings).indexOf(element);
+      selectors.siblingIndex = index;
+      selectors.siblingCount = siblings.length;
+    }
+    
+    return selectors;
+  }
+  
+  generateCSSSelector(element) {
+    // Generate a CSS selector path
+    const path = [];
+    let current = element;
+    
+    while (current && current !== document.body && path.length < 5) {
+      let selector = current.tagName.toLowerCase();
+      
+      // Add ID if available and not dynamic
+      if (current.id && !current.id.match(/^[0-9]/) && !current.id.match(/^:r[0-9a-z]+:/)) {
+        selector = `#${current.id}`;
+        path.unshift(selector);
+        break;
+      }
+      
+      // Add meaningful class
+      const meaningfulClass = Array.from(current.classList).find(c => 
+        !c.match(/^[a-z]{1,3}-[a-zA-Z0-9]{5,}$/) && // Not CSS module hash
+        !c.match(/^_[a-zA-Z0-9]+$/) && // Not styled-component
+        !c.match(/^css-/) && // Not emotion
+        c.length > 2 && c.length < 30
+      );
+      
+      if (meaningfulClass) {
+        selector = `.${meaningfulClass}`;
+      }
+      
+      // Add nth-of-type for disambiguation
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = parent.querySelectorAll(`:scope > ${selector.split('.')[0] || current.tagName.toLowerCase()}`);
+        if (siblings.length > 1) {
+          const index = Array.from(siblings).indexOf(current) + 1;
+          selector += `:nth-of-type(${index})`;
+        }
+      }
+      
+      path.unshift(selector);
+      current = current.parentElement;
+    }
+    
+    return path.join(' > ');
   }
 
   findElement(selector, text, robustSelectors = null) {
@@ -3356,10 +4464,10 @@ style.textContent = `
     position: fixed;
     bottom: 20px;
     right: 20px;
-    width: 320px;
+    width: 340px;
     background: white;
     border-radius: 16px;
-    box-shadow: 0 10px 50px rgba(0,0,0,0.25);
+    box-shadow: 0 20px 50px rgba(0,0,0,0.15), 0 10px 20px rgba(0,0,0,0.1), 0 0 0 1px rgba(0,0,0,0.05);
     z-index: 2147483647;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     overflow: hidden;
@@ -3369,8 +4477,8 @@ style.textContent = `
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 16px;
-    background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+    padding: 14px 16px;
+    background: linear-gradient(135deg, #4F46E5 0%, #6366F1 50%, #7C3AED 100%);
     color: white;
     cursor: grab;
   }
@@ -3382,19 +4490,25 @@ style.textContent = `
   }
 
   .guideme-logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-weight: 700;
-    font-size: 14px;
+    font-size: 15px;
+  }
+
+  .guideme-logo svg {
+    opacity: 0.9;
   }
 
   .guideme-save-btn {
-    background: rgba(255,255,255,0.2);
+    background: rgba(255,255,255,0.15);
     border: none;
     color: white;
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
     cursor: pointer;
-    font-size: 14px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -3403,25 +4517,26 @@ style.textContent = `
 
   .guideme-save-btn:hover {
     background: rgba(245, 158, 11, 0.9);
-    transform: scale(1.1);
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
   }
 
   .guideme-close-btn {
-    background: rgba(255,255,255,0.2);
+    background: rgba(255,255,255,0.15);
     border: none;
     color: white;
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
     cursor: pointer;
-    font-size: 14px;
     display: flex;
     align-items: center;
     justify-content: center;
+    transition: all 0.2s;
   }
 
   .guideme-close-btn:hover {
-    background: rgba(255,255,255,0.3);
+    background: rgba(255,255,255,0.25);
   }
 
   .guideme-panel-content {
@@ -3429,20 +4544,59 @@ style.textContent = `
   }
 
   .guideme-step-info {
-    margin-bottom: 8px;
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: space-between;
+    margin-bottom: 4px;
   }
 
   .guideme-step-number {
     display: inline-block;
-    background: #EEF2FF;
+    background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%);
     color: #4F46E5;
-    padding: 4px 10px;
-    border-radius: 12px;
+    padding: 5px 12px;
+    border-radius: 20px;
     font-size: 12px;
     font-weight: 600;
+    box-shadow: 0 1px 3px rgba(79, 70, 229, 0.1);
+  }
+
+  .guideme-step-actions {
+    display: flex;
+    gap: 4px;
+  }
+
+  .guideme-edit-btn, .guideme-delete-step-btn, .guideme-refresh-btn {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #f9fafb;
+    color: #6b7280;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .guideme-edit-btn:hover {
+    background: #EEF2FF;
+    border-color: #c7d2fe;
+    color: #4F46E5;
+  }
+
+  .guideme-delete-step-btn:hover {
+    background: #FEF2F2;
+    border-color: #fecaca;
+    color: #dc2626;
+  }
+
+  .guideme-refresh-btn:hover {
+    background: #f0fdf4;
+    border-color: #bbf7d0;
+    color: #16a34a;
   }
 
   .guideme-persist-badge {
@@ -3452,54 +4606,74 @@ style.textContent = `
   }
 
   .guideme-instruction {
-    margin: 12px 0 8px;
+    margin: 14px 0 8px;
     font-size: 15px;
-    line-height: 1.5;
+    line-height: 1.6;
     color: #1f2937;
+    font-weight: 500;
   }
 
   .guideme-hint {
     margin: 0;
     font-size: 13px;
     color: #6b7280;
+    line-height: 1.5;
+  }
+
+  .guideme-not-found {
+    margin: 8px 0 0;
+    font-size: 12px;
+    color: #f59e0b;
+    background: #fffbeb;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid #fef3c7;
   }
 
   .guideme-panel-controls {
     display: flex;
-    gap: 8px;
+    gap: 10px;
     padding: 0 16px 16px;
   }
 
   .guideme-prev-btn, .guideme-next-btn {
     flex: 1;
-    padding: 10px 16px;
+    padding: 12px 16px;
     border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    background: #f9fafb;
+    border-radius: 10px;
+    background: white;
     color: #374151;
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
   }
 
   .guideme-prev-btn:hover:not(:disabled), .guideme-next-btn:hover:not(:disabled) {
-    background: #e5e7eb;
+    background: #f3f4f6;
+    border-color: #d1d5db;
   }
 
   .guideme-prev-btn:disabled {
-    opacity: 0.5;
+    opacity: 0.4;
     cursor: not-allowed;
   }
 
   .guideme-next-btn {
-    background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+    background: linear-gradient(135deg, #4F46E5 0%, #6366F1 100%);
     color: white;
     border: none;
+    box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
   }
 
-  .guideme-next-btn:hover {
-    opacity: 0.9;
+  .guideme-next-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, #4338ca 0%, #4F46E5 100%);
+    box-shadow: 0 4px 12px rgba(79, 70, 229, 0.4);
+    transform: translateY(-1px);
   }
 
   .guideme-progress-bar {
@@ -3509,27 +4683,190 @@ style.textContent = `
 
   .guideme-progress-fill {
     height: 100%;
-    background: linear-gradient(90deg, #4F46E5, #7C3AED);
+    background: linear-gradient(90deg, #4F46E5, #6366F1, #7C3AED);
     transition: width 0.3s ease;
   }
 
   .guideme-exit-btn {
     width: calc(100% - 32px);
     margin: 0 16px 16px;
-    padding: 10px 16px;
-    background: transparent;
-    border: 1px solid #dc2626;
-    border-radius: 8px;
+    padding: 11px 16px;
+    background: white;
+    border: 1px solid #fecaca;
+    border-radius: 10px;
     color: #dc2626;
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
   }
 
   .guideme-exit-btn:hover {
     background: #dc2626;
+    border-color: #dc2626;
     color: white;
+    box-shadow: 0 2px 8px rgba(220, 38, 38, 0.3);
+  }
+
+  /* Inline edit modal */
+  .guideme-edit-modal {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: white;
+    z-index: 10;
+    display: none;
+    flex-direction: column;
+    border-radius: 16px;
+    overflow: hidden;
+  }
+
+  .guideme-edit-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 16px;
+    background: linear-gradient(135deg, #4F46E5 0%, #6366F1 50%, #7C3AED 100%);
+    color: white;
+  }
+
+  .guideme-edit-modal-header h3 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .guideme-edit-modal-close {
+    background: rgba(255,255,255,0.15);
+    border: none;
+    color: white;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+  }
+
+  .guideme-edit-modal-close:hover {
+    background: rgba(255,255,255,0.25);
+  }
+
+  .guideme-edit-modal-body {
+    flex: 1;
+    padding: 16px;
+  }
+
+  .guideme-edit-input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    font-size: 14px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 80px;
+    box-sizing: border-box;
+  }
+
+  .guideme-edit-input:focus {
+    outline: none;
+    border-color: #4F46E5;
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  }
+
+  .guideme-edit-actions {
+    display: flex;
+    gap: 10px;
+    padding: 0 16px 16px;
+  }
+
+  .guideme-edit-cancel {
+    flex: 1;
+    padding: 11px 16px;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: white;
+    color: #374151;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .guideme-edit-cancel:hover {
+    background: #f3f4f6;
+    border-color: #d1d5db;
+  }
+
+  .guideme-edit-save {
+    flex: 1;
+    padding: 11px 16px;
+    border: none;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #4F46E5 0%, #6366F1 100%);
+    color: white;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+  }
+
+  .guideme-edit-save:hover {
+    background: linear-gradient(135deg, #4338ca 0%, #4F46E5 100%);
+    box-shadow: 0 4px 12px rgba(79, 70, 229, 0.4);
+    transform: translateY(-1px);
+  }
+
+  /* Toast notification */
+  .guideme-toast {
+    position: fixed;
+    bottom: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: linear-gradient(135deg, #1f2937 0%, #374151 100%);
+    color: white;
+    padding: 12px 24px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 500;
+    z-index: 2147483647;
+    animation: guideme-toast-in 0.3s ease, guideme-toast-out 0.3s ease 1.7s forwards;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+  }
+
+  @keyframes guideme-toast-in {
+    from {
+      opacity: 0;
+      transform: translateX(-50%) translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  }
+
+  @keyframes guideme-toast-out {
+    from {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+    to {
+      opacity: 0;
+      transform: translateX(-50%) translateY(20px);
+    }
   }
 
   @keyframes guideme-pulse {

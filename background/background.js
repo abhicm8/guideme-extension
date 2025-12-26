@@ -80,9 +80,9 @@ class GuideMeBackground {
 
   // ============ MACRO MANAGEMENT ============
   async saveMacro(payload) {
-    const { name, steps, startUrl, task, category } = payload;
+    const { name, steps, startUrl, task, category, isRecorded } = payload;
     
-    console.log('GuideMe BG: saveMacro called with', steps?.length, 'steps');
+    console.log('GuideMe BG: saveMacro called with', steps?.length, 'steps', isRecorded ? '(recorded)' : '(AI-generated)');
     steps?.forEach((step, i) => {
       console.log(`GuideMe BG: Step ${i + 1}:`, {
         desc: step.description?.substring(0, 30),
@@ -101,6 +101,7 @@ class GuideMeBackground {
       startUrl: startUrl,
       startUrlPattern: new URL(startUrl).hostname,
       category: category || 'other',
+      isRecorded: isRecorded || false,
       createdAt: Date.now()
     };
     
