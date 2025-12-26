@@ -29,6 +29,9 @@ class GuideMeContent {
     this.isGuideActive = false;
     this.originalTask = '';
     
+    // AI request tracking - prevents highlighting stale elements while AI is processing
+    this.isWaitingForAI = false;
+    
     // SPA Navigation Detection
     this.lastUrl = window.location.href;
     this.urlCheckInterval = null;
@@ -180,6 +183,11 @@ class GuideMeContent {
     if (this.originalTask) {
       this.saveStateForNavigation();
       
+      // Clear highlights and set waiting flag immediately to prevent showing stale elements
+      this.isWaitingForAI = true;
+      this.clearHighlights();
+      this.currentHighlightedElement = null;
+      
       // Wait for new content to load, then continue
       setTimeout(async () => {
         await this.waitForPageReady();
@@ -214,7 +222,7 @@ class GuideMeContent {
           if (!guideState || (backupState.savedAt > (guideState.savedAt || 0))) {
             guideState = backupState;
           }
-          // DON'T clear the backup immediately - keep it for reliability
+          // Clear the backup after reading
           localStorage.removeItem('guideme_backup');
         }
       } catch (e) {}
@@ -226,12 +234,19 @@ class GuideMeContent {
         return;
       }
       
-      // Check if state is expired (5 minutes for complex multi-page tasks)
+      // CRITICAL: If this was marked as final batch (single-page task), don't resume
+      if (guideState.isFinalStepBatch) {
+        console.log('GuideMe: Single-page task (isFinalStepBatch), not resuming');
+        this.clearGuideState();
+        return;
+      }
+      
+      // Check if state is expired (2 minutes - reduced to prevent stale resumptions)
       const stateAge = Date.now() - (guideState.savedAt || 0);
-      const MAX_AGE = 5 * 60 * 1000; // 5 minutes - allow time for complex multi-page workflows
+      const MAX_AGE = 2 * 60 * 1000; // 2 minutes - reduced from 5
       
       if (stateAge > MAX_AGE) {
-        console.log('GuideMe: Saved state expired after 5 minutes, clearing...');
+        console.log('GuideMe: Saved state expired after 2 minutes, clearing...');
         this.clearGuideState();
         return;
       }
@@ -243,6 +258,13 @@ class GuideMeContent {
       
       if (navType === 'back_forward') {
         console.log('GuideMe: Back/forward navigation detected, clearing guide');
+        this.clearGuideState();
+        return;
+      }
+      
+      // Check if this is a fresh page load (reload or direct navigation) - don't resume
+      if (navType === 'reload') {
+        console.log('GuideMe: Page reload detected, clearing guide');
         this.clearGuideState();
         return;
       }
@@ -297,9 +319,10 @@ class GuideMeContent {
         this.startGuide();
         this.saveGuideState();
       } else if (!this.isSavedGuideReplay) {
-        // Live AI guide needs continuation
+        // Live AI guide needs continuation - set waiting flag first
         console.log('GuideMe: Requesting AI for new page (continuation:', this.continuationCount, ')');
         this.isMultiPageTask = true;
+        this.isWaitingForAI = true; // Prevent stale highlights
         this.requestGuideContinuation();
       } else {
         // Saved/recorded guide with no remaining steps = complete
@@ -362,7 +385,13 @@ class GuideMeContent {
       });
       
       // Also add to allStepsForSaving with selectors
-      if (!this.isSavedGuideReplay && this.allStepsForSaving) {
+      // Ensure allStepsForSaving is initialized
+      if (!this.allStepsForSaving) {
+        this.allStepsForSaving = [];
+        console.log('GuideMe: Initialized allStepsForSaving (was undefined)');
+      }
+      
+      if (!this.isSavedGuideReplay) {
         const alreadyExists = this.allStepsForSaving.some(
           s => s.description === completedStep.description
         );
@@ -456,6 +485,13 @@ class GuideMeContent {
   }
 
   async requestGuideContinuation() {
+    // IMPORTANT: Set flag to prevent stale element highlighting
+    this.isWaitingForAI = true;
+    
+    // Clear any existing highlights before showing loading
+    this.clearHighlights();
+    this.currentHighlightedElement = null;
+    
     // Show loading state
     this.showContinuationLoading();
     
@@ -486,6 +522,7 @@ class GuideMeContent {
       
       if (response.error) {
         console.error('GuideMe: Continuation failed:', response.error);
+        this.isWaitingForAI = false; // Clear flag on error
         this.showContinuationError(response.error);
         return;
       }
@@ -493,6 +530,7 @@ class GuideMeContent {
       // IMPORTANT: Check for steps FIRST before checking completed flag
       if (response.steps && response.steps.length > 0) {
         this.hideContinuationLoading();
+        this.isWaitingForAI = false; // Clear flag - ready to highlight new elements
         this.currentSteps = response.steps;
         this.currentStepIndex = 0;
         this.isFinalStepBatch = response.completed === true;
@@ -501,14 +539,17 @@ class GuideMeContent {
         this.saveGuideState();
       } else if (response.completed) {
         console.log('GuideMe: AI says task complete (no more steps)');
+        this.isWaitingForAI = false; // Clear flag
         await this.showTaskCompleted();
       } else {
         // No steps and not completed - might be an issue
         this.hideContinuationLoading();
+        this.isWaitingForAI = false; // Clear flag
         console.log('GuideMe: No more steps for this page (odd state)');
       }
     } catch (error) {
       console.error('GuideMe: Failed to continue guide:', error);
+      this.isWaitingForAI = false; // Clear flag on error
       this.showContinuationError(error.message);
     }
   }
@@ -997,7 +1038,8 @@ class GuideMeContent {
           visitedUrls: this.visitedUrls || [],
           totalStepsCompleted: (this.allStepsForSaving || []).length,
           continuationCount: this.continuationCount || 0,
-          isMultiPageTask: this.isMultiPageTask || false
+          isMultiPageTask: this.isMultiPageTask || false,
+          isFinalStepBatch: this.isFinalStepBatch || false // Marks single-page tasks as complete
         }
       });
       
@@ -1016,7 +1058,8 @@ class GuideMeContent {
           allOriginalSteps: this.allOriginalSteps || null,
           originalStepIndex: this.originalStepIndex || 0,
           allStepsForSaving: this.allStepsForSaving || [],
-          visitedUrls: this.visitedUrls || []
+          visitedUrls: this.visitedUrls || [],
+          isFinalStepBatch: this.isFinalStepBatch || false // Marks single-page tasks as complete
         }));
       } catch (e) {
         console.log('GuideMe: localStorage backup failed:', e);
@@ -1061,11 +1104,15 @@ class GuideMeContent {
         this.isRecordedGuide = message.payload.isRecorded || false;
         this.savedGuideId = message.payload.guideId || null; // Store guide ID for editing
         this.guideWasEdited = false; // Reset edit flag for new guide
-        this.isFinalStepBatch = false; // Reset - AI will tell us when we're on final batch
+        // CRITICAL: Use the isFinalStepBatch from AI response - tells us if single-page task
+        this.isFinalStepBatch = message.payload.isFinalStepBatch || false;
+        // Reset multi-page flag - will be set to true only if we actually continue to next page
+        this.isMultiPageTask = false;
         
         console.log('GuideMe: START_GUIDE received');
         console.log('GuideMe: guideId:', this.savedGuideId);
         console.log('GuideMe: isSavedGuideReplay:', this.isSavedGuideReplay);
+        console.log('GuideMe: isFinalStepBatch:', this.isFinalStepBatch);
         
         // For saved/recorded guides, store ALL original steps for multi-page navigation
         if (this.isSavedGuideReplay) {
@@ -1983,6 +2030,7 @@ class GuideMeContent {
 
   stopGuide() {
     this.isGuideActive = false;
+    this.isWaitingForAI = false; // Reset AI waiting flag
     // Cancel any pending retries
     if (this.pendingRetry) {
       clearTimeout(this.pendingRetry);
@@ -2135,6 +2183,12 @@ class GuideMeContent {
     this.mutationObserver = new MutationObserver((mutations) => {
       if (!this.isGuideActive) return;
       
+      // Don't try to highlight while waiting for AI response
+      if (this.isWaitingForAI) {
+        console.log('GuideMe: DOM changed but waiting for AI, skipping highlight');
+        return;
+      }
+      
       // Check if highlighted element was removed from DOM
       if (this.currentHighlightedElement && !document.body.contains(this.currentHighlightedElement)) {
         console.log('GuideMe: Highlighted element removed from DOM, clearing highlight');
@@ -2142,7 +2196,7 @@ class GuideMeContent {
         this.currentHighlightedElement = null;
         // Try to re-find and highlight
         setTimeout(() => {
-          if (this.isGuideActive && this.currentSteps.length > 0) {
+          if (this.isGuideActive && this.currentSteps.length > 0 && !this.isWaitingForAI) {
             this.highlightStep(this.currentStepIndex);
           }
         }, 300);
@@ -2150,7 +2204,7 @@ class GuideMeContent {
       }
       
       // If we don't have a highlighted element yet, try to find it
-      if (!this.currentHighlightedElement && this.currentSteps.length > 0) {
+      if (!this.currentHighlightedElement && this.currentSteps.length > 0 && !this.isWaitingForAI) {
         const step = this.currentSteps[this.currentStepIndex];
         if (step) {
           const selector = step.element || step.selector;
@@ -2438,8 +2492,8 @@ class GuideMeContent {
 
     // Show step number based on context
     const stepNumberEl = this.controlPanel.querySelector('.guideme-step-number');
-    if (this.isMultiPageTask || overallCompleted > 0) {
-      // Multi-page: show overall progress
+    if ((this.isMultiPageTask || overallCompleted > 0) && !this.isFinalStepBatch) {
+      // Multi-page: show overall progress (but not if this is a single-page task marked final)
       stepNumberEl.textContent = `Step ${overallStep} • Multi-page`;
     } else {
       // Single page: show X of Y
@@ -2473,11 +2527,11 @@ class GuideMeContent {
       nextBtn.title = '';
     }
 
-    // Update progress bar (pulse if multi-page to show ongoing)
+    // Update progress bar (pulse if multi-page to show ongoing, but not for final batch)
     const progressBar = this.controlPanel.querySelector('.guideme-progress-fill');
     const progress = (pageStepNum / pageTotal) * 100;
     progressBar.style.width = `${progress}%`;
-    if (this.isMultiPageTask) {
+    if (this.isMultiPageTask && !this.isFinalStepBatch) {
       progressBar.style.animation = 'guideme-pulse 2s ease-in-out infinite';
     } else {
       progressBar.style.animation = 'none';
@@ -2770,6 +2824,12 @@ class GuideMeContent {
 
   // Detect if we should auto-complete the guide
   shouldAutoComplete() {
+    // If AI already told us this is the final batch, trust it!
+    if (this.isFinalStepBatch) {
+      console.log('GuideMe: Auto-complete - AI marked this as final batch');
+      return true;
+    }
+    
     const task = (this.originalTask || '').toLowerCase();
     
     // IMPORTANT: Multi-page tasks like "pull request", "fork", "merge" need MORE steps
@@ -2780,12 +2840,26 @@ class GuideMeContent {
       task.includes('contribute') || task.includes('upstream')
     );
     
+    // Simple single-page tasks should complete faster
+    const isSimpleSinglePageTask = (
+      task.includes('clone') || task.includes('copy') ||
+      task.includes('download') || task.includes('find') ||
+      task.includes('show') || task.includes('where') ||
+      task.includes('click') || task.includes('open')
+    );
+    
+    // For simple tasks, complete after just a few steps
+    if (isSimpleSinglePageTask && this.currentSteps.length <= 3) {
+      console.log('GuideMe: Auto-complete - simple single-page task');
+      return true;
+    }
+    
     // For complex multi-page tasks, be MUCH less aggressive about auto-completing
-    const minStepsForComplex = 8;
-    const minStepsForSimple = 5;
+    const minStepsForComplex = 10;
+    const minStepsForSimple = 6;
     
     // Rule 1: If we've done many steps, consider completion (but higher threshold for complex tasks)
-    const maxSteps = isComplexMultiPageTask ? 20 : 15;
+    const maxSteps = isComplexMultiPageTask ? 25 : 18; // Increased limits
     if (this.totalStepsCompleted >= maxSteps) {
       console.log('GuideMe: Auto-complete triggered - max steps reached:', this.totalStepsCompleted);
       return true;
@@ -2817,52 +2891,23 @@ class GuideMeContent {
         return true;
       }
       
-      // Medium completion keywords - only for simple tasks with enough steps
-      if (!isComplexMultiPageTask) {
-        const mediumCompletionWords = ['create', 'submit', 'save', 'done', 'finish', 'complete', 'confirm', 'publish', 'send', 'post'];
-        if (this.totalStepsCompleted >= minStepsForSimple && mediumCompletionWords.some(kw => desc.includes(kw))) {
-          console.log('GuideMe: Auto-complete - completion action with', this.totalStepsCompleted, 'steps');
-          return true;
-        }
-      }
+      // DISABLED medium completion keywords - was causing too many premature completions
+      // Let the AI decide when to complete instead
     }
     
-    // Rule 3: For "how to" tasks (NOT complex multi-page ones), complete after showing the form
-    const isHowToTask = /^(how|show me how|help me|i want to|i need to)/i.test(task);
-    if (isHowToTask && !isComplexMultiPageTask && this.totalStepsCompleted >= 4) {
-      const allSteps = this.allStepsForSaving || [];
-      const hasFinalAction = allSteps.some(step => {
-        const d = (step.description || '').toLowerCase();
-        return d.includes('create') || d.includes('submit') || d.includes('save') || 
-               d.includes('confirm') || d.includes('finish') || d.includes('done');
-      });
-      if (hasFinalAction) {
-        console.log('GuideMe: Auto-complete - "how to" task reached final action');
-        return true;
-      }
-    }
+    // Rule 3: DISABLED - "how to" task completion was too aggressive
+    // The AI should guide until it marks completed: true
     
     // Rule 4: For informational tasks only (not action tasks)
+    // But require more steps to be sure
     const isInformational = /^(where is|what is|find|show me where|explain|look for)/i.test(task);
-    if (isInformational && this.totalStepsCompleted >= 5) {
-      console.log('GuideMe: Auto-complete triggered - informational task with 5+ steps');
+    if (isInformational && this.totalStepsCompleted >= 7) { // Increased from 5
+      console.log('GuideMe: Auto-complete triggered - informational task with 7+ steps');
       return true;
     }
     
-    // Rule 5: DISABLED for complex tasks - was causing premature completion
-    // Only use this for very simple single-page tasks
-    if (!isComplexMultiPageTask && this.totalStepsCompleted >= 3) {
-      const taskWords = task.split(/\s+/).filter(w => w.length > 3);
-      if (completedStep) {
-        const desc = (completedStep.description || '').toLowerCase();
-        const matchCount = taskWords.filter(word => desc.includes(word)).length;
-        // If 3+ task words appear AND it's a final action
-        if (matchCount >= 3 && (desc.includes('click create') || desc.includes('click submit') || desc.includes('click confirm'))) {
-          console.log('GuideMe: Auto-complete - strong task match in step');
-          return true;
-        }
-      }
-    }
+    // Rule 5: DISABLED completely - was causing too many premature completions
+    // Task word matching in step descriptions is unreliable
     
     return false;
   }
@@ -2882,6 +2927,11 @@ class GuideMeContent {
     }
     
     console.log('GuideMe: Continuation request', this.continuationCount, 'of', maxContinuations);
+    
+    // IMPORTANT: Set waiting flag and clear highlights to prevent stale element display
+    this.isWaitingForAI = true;
+    this.clearHighlights();
+    this.currentHighlightedElement = null;
     
     // Mark this as a multi-page task since we're continuing
     this.isMultiPageTask = true;
@@ -2922,8 +2972,9 @@ class GuideMeContent {
 
       if (response.error) {
         console.error('GuideMe: Continuation error:', response.error);
-        this.showCompletionMessage();
-        setTimeout(() => this.stopGuide(), 2000);
+        this.isWaitingForAI = false;
+        // Show retry option instead of just stopping
+        this.showRetryOption(response.error);
         return;
       }
 
@@ -2931,6 +2982,7 @@ class GuideMeContent {
       // AI might return completed: true WITH final steps - we need to show those steps!
       if (response.steps && response.steps.length > 0) {
         console.log('GuideMe: Got', response.steps.length, 'more steps');
+        this.isWaitingForAI = false; // Ready to highlight new elements
         this.currentSteps = response.steps;
         this.currentStepIndex = 0;
         
@@ -2962,14 +3014,17 @@ class GuideMeContent {
       } else if (response.completed === true) {
         // No steps AND marked complete - truly done
         console.log('GuideMe: Task marked as completed by AI (no more steps)');
+        this.isWaitingForAI = false;
         this.showFinalCompletion();
       } else {
         // No more steps and not marked complete - assume done
         console.log('GuideMe: No more steps available, assuming complete');
+        this.isWaitingForAI = false;
         this.showFinalCompletion();
       }
     } catch (error) {
       console.error('GuideMe: Continuation failed:', error);
+      this.isWaitingForAI = false;
       // Show error with retry option instead of just stopping
       this.showRetryOption(error.message || 'Connection failed');
     }
@@ -3004,19 +3059,21 @@ class GuideMeContent {
       await this.updateSavedGuideInStorage();
     }
     
-    // IMMEDIATELY clear all saved state to prevent re-activation on back navigation
+    // Auto-save the guide BEFORE clearing state (so we don't lose allStepsForSaving!)
+    await this.autoSaveGuideIfEnabled();
+    
+    // Store the count before clearing
+    const totalSteps = (this.allStepsForSaving || []).length;
+    
+    // THEN clear all saved state to prevent re-activation on back navigation
     this.isGuideActive = false;
     await this.clearGuideState();
     try {
       localStorage.removeItem('guideme_backup');
     } catch (e) {}
-    console.log('GuideMe: Guide completed - all state cleared immediately');
+    console.log('GuideMe: Guide completed - all state cleared');
     
-    // Auto-save the guide if enabled
-    await this.autoSaveGuideIfEnabled();
-    
-    // Show success with stats - use allStepsForSaving which has accurate count
-    const totalSteps = (this.allStepsForSaving || []).length;
+    // Show success with stats
     if (this.controlPanel) {
       this.controlPanel.querySelector('.guideme-step-number').textContent = '✅ Complete!';
       this.controlPanel.querySelector('.guideme-instruction').textContent = '🎉 You made it!';
@@ -3099,6 +3156,12 @@ class GuideMeContent {
   }
 
   highlightStep(stepIndex, retryCount = 0) {
+    // Don't highlight while waiting for AI response
+    if (this.isWaitingForAI) {
+      console.log('GuideMe: Skipping highlight - waiting for AI response');
+      return;
+    }
+    
     // Always clear highlights first
     this.clearHighlights();
     this.currentHighlightedElement = null;
@@ -3352,14 +3415,26 @@ class GuideMeContent {
                                    el.getAttribute('aria-expanded') !== null ||
                                    el.getAttribute('aria-haspopup') !== null ||
                                    el.classList.contains('dropdown-toggle') ||
-                                   el.closest('[data-toggle="dropdown"]');
+                                   el.closest('[data-toggle="dropdown"]') ||
+                                   el.querySelector('[class*="caret"]') ||
+                                   el.querySelector('[class*="arrow"]');
       
       // Detect visual prominence (primary action buttons)
       const style = window.getComputedStyle(el);
       const bgColor = style.backgroundColor;
       const isPrimary = bgColor && !bgColor.includes('rgba(0, 0, 0, 0)') && 
                        !bgColor.includes('transparent') &&
-                       !bgColor.includes('rgb(255, 255, 255)');
+                       !bgColor.includes('rgb(255, 255, 255)') &&
+                       !bgColor.includes('rgb(0, 0, 0)'); // Also exclude pure black
+      
+      // GitHub-specific: detect green Code button
+      const isGitHubCodeButton = (text && text.toLowerCase().includes('code') && 
+                                  (el.classList.contains('btn-primary') || 
+                                   bgColor.includes('rgb(35, 134, 54)') || // GitHub green
+                                   bgColor.includes('rgb(46, 160, 67)') ||  // GitHub green variant
+                                   bgColor.includes('rgb(31, 136, 61)') ||  // Another green variant
+                                   el.closest('.file-navigation') ||
+                                   el.closest('[class*="file-navigation"]')));
       
       // Detect if in a modal/dialog (important for AWS, Stripe, etc.)
       const isInModal = el.closest('[role="dialog"], [role="alertdialog"], .modal, .dialog, [aria-modal="true"], .overlay');
@@ -3368,6 +3443,7 @@ class GuideMeContent {
       let hints = [];
       if (hasDropdownIndicator) hints.push('dropdown');
       if (isPrimary && elType === 'button') hints.push('primary-action');
+      if (isGitHubCodeButton) hints.push('clone-button'); // Specific hint for clone
       if (el.closest('nav, [role="navigation"], [role="tablist"]')) hints.push('navigation');
       if (el.closest('form')) hints.push('form');
       if (isInModal) hints.push('in-modal');

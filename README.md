@@ -16,6 +16,22 @@
 
 ---
 
+## ⚡ Quick Start
+
+```bash
+# 1. Clone
+git clone https://github.com/abhicm8/guideme-extension.git
+
+# 2. Load in Chrome
+#    Go to chrome://extensions → Enable Developer Mode → Load Unpacked → Select folder
+
+# 3. Get free API key from https://aistudio.google.com/apikey
+
+# 4. Click GuideMe icon → Settings → Paste API key → Done!
+```
+
+---
+
 ## 🤔 What is GuideMe?
 
 Most AI tools **summarize pages** or **give you text instructions** you have to follow manually. GuideMe is different — it **actually highlights the exact buttons and links** you need to click, guiding you step-by-step through any workflow.
@@ -63,6 +79,64 @@ This helps both:
 - Currently **websites only** — desktop apps are a future goal
 
 But even with these limitations, it's useful. Most AI tools don't even try to show you *where* to click — they just tell you.
+
+---
+
+## 🧠 The Hard Truth: Why This Problem is Difficult
+
+**What you're seeing is one of the hardest unsolved problems in AI right now.**
+
+### The Core Challenge
+
+When you look at a webpage, you instantly know which "Code" button to click — the big green one, not the small tab in the header. **You can SEE it.**
+
+But the AI receives only text:
+```
+gm-5: "Code" [button] (main)
+gm-12: "Code" [link] (header)
+```
+
+It cannot see:
+- Visual prominence (colors, size, position)
+- Spatial relationships (what's next to what)
+- UI patterns (that green usually means "action")
+- Context from surrounding elements
+
+**Humans pick the right element instantly because we have eyes. The AI is essentially blind, making educated guesses from text hints.**
+
+### Who Else is Working on This?
+
+This isn't an unexplored problem — some of the biggest AI companies are tackling it:
+
+| Company | Product | Funding |
+|---------|---------|---------|
+| **Adept.ai** | ACT-1 (AI that uses software) | $415M+ |
+| **MultiOn** | Browser automation agent | $29M |
+| **Anthropic** | Claude Computer Use | $8B+ |
+| **OpenAI** | Operator (rumored) | $13B+ |
+
+These companies have hundreds of engineers and billions in funding. **The fact that this is hard doesn't mean we shouldn't try — it means solving even part of it is meaningful.**
+
+### What Would Make This Better
+
+| Current Approach | What Could Help |
+|-----------------|-----------------|
+| Text-only DOM | **Vision AI** (send screenshots to GPT-4V/Claude Vision) |
+| Generic prompts | **Site-specific training** (learn GitHub, AWS, Figma patterns) |
+| One-shot guessing | **Feedback loops** (learn from user corrections) |
+| Stateless | **Memory** (remember what worked on this site) |
+
+### A Call to Contributors 🚀
+
+**This is genuinely hard — and that's exactly why it's exciting.**
+
+Every improvement you make helps thousands of users. Some ideas:
+- **Add vision AI support** — send screenshots alongside DOM
+- **Improve element extraction** — better hints, better context
+- **Create site-specific guides** — pre-built paths for common sites
+- **Build feedback mechanisms** — let users correct wrong selections
+
+The gap between "working demo" and "magical experience" is where the interesting engineering happens. If you're looking for an impactful open source project to contribute to — this is it.
 
 ---
 

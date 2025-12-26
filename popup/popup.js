@@ -1087,12 +1087,30 @@ class GuideMePopup {
       }
 
       // Send steps to content script for highlighting (include task for cross-page tracking)
+      // IMPORTANT: Pass isFinalStepBatch so content script knows if this completes on one page
+      
+      // Detect simple single-page tasks that don't need continuation
+      const taskLower = task.toLowerCase();
+      const isSimpleSinglePageTask = (
+        taskLower.includes('clone') || taskLower.includes('copy url') ||
+        taskLower.includes('download') || taskLower.includes('find') ||
+        taskLower.includes('show') || taskLower.includes('where is') ||
+        taskLower.includes('locate') || taskLower.includes('what is')
+      ) && !taskLower.includes('fork') && !taskLower.includes('pull request');
+      
+      // Mark as final batch if AI says so OR if it's a simple task with few steps
+      const isFinalBatch = response.completed === true || 
+                           (isSimpleSinglePageTask && this.currentSteps.length <= 3);
+      
+      console.log('GuideMe: Task analysis - simple:', isSimpleSinglePageTask, 'steps:', this.currentSteps.length, 'isFinalBatch:', isFinalBatch);
+      
       await chrome.tabs.sendMessage(tab.id, {
         type: 'START_GUIDE',
         payload: {
           steps: this.currentSteps,
           highlightColor: this.settings.highlightColor,
-          task: task
+          task: task,
+          isFinalStepBatch: isFinalBatch // Tell content script if this is single-page
         }
       });
 
