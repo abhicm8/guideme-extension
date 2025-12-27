@@ -1,6 +1,11 @@
 // GuideMe Content Script
 // Runs on every page to read DOM and inject overlay highlights
 
+// Prevent double-injection (can happen in SPAs or when extension reloads)
+if (typeof window.guideMeInstance !== 'undefined') {
+  console.log('GuideMe: Content script already loaded, skipping re-initialization');
+} else {
+
 class GuideMeContent {
   constructor() {
     this.currentSteps = [];
@@ -28,6 +33,8 @@ class GuideMeContent {
     this.pendingRetry = null;
     this.isGuideActive = false;
     this.originalTask = '';
+    this.lastExtractedElements = {};
+    this.lastDomSnapshot = null;
     
     // AI request tracking - prevents highlighting stale elements while AI is processing
     this.isWaitingForAI = false;
@@ -500,6 +507,7 @@ class GuideMeContent {
     try {
       // Get current page DOM
       const dom = this.extractDOM();
+      this.lastDomSnapshot = dom;
       
       // Ask background to continue the guide
       const response = await chrome.runtime.sendMessage({
@@ -2153,11 +2161,12 @@ class GuideMeContent {
         return;
       }
       
-      // Check if clicked element is or contains the highlighted element
-      const clickedOnHighlighted = 
-        this.currentHighlightedElement.contains(e.target) || 
+      // Check if clicked element is or contains the highlighted element (support shadow DOM)
+      const path = e.composedPath ? e.composedPath() : [];
+      const clickedOnHighlighted =
         e.target === this.currentHighlightedElement ||
-        this.currentHighlightedElement.contains(e.target.parentElement);
+        this.currentHighlightedElement.contains(e.target) ||
+        path.includes(this.currentHighlightedElement);
       
       if (!clickedOnHighlighted) {
         console.log('GuideMe: Click was not on highlighted element - ignoring');
@@ -2621,9 +2630,65 @@ class GuideMeContent {
     
     console.log('GuideMe: deleteCurrentStep - currentStepIndex:', this.currentStepIndex);
     console.log('GuideMe: deleteCurrentStep - savedGuideId:', this.savedGuideId);
+    console.log('GuideMe: deleteCurrentStep - currentSteps.length:', this.currentSteps.length);
+    console.log('GuideMe: deleteCurrentStep - allOriginalSteps.length:', this.allOriginalSteps?.length);
     
-    // Calculate actual index in original steps BEFORE modifying arrays
-    const actualIndex = (this.originalStepIndex || 0) + this.currentStepIndex;
+    // For saved guide replays, we need to figure out which step in allOriginalSteps to remove
+    // Key insight: during replay, currentSteps IS allOriginalSteps (same array or copy of it)
+    // So currentStepIndex directly corresponds to allOriginalSteps index
+    let actualIndex = this.currentStepIndex;
+    
+    // If currentSteps was sliced (multi-page scenario), we need to adjust
+    // We can detect this by comparing lengths
+    if (this.isSavedGuideReplay && this.allOriginalSteps) {
+      // If lengths match, currentSteps is the full array, use index directly
+      if (this.currentSteps.length === this.allOriginalSteps.length) {
+        actualIndex = this.currentStepIndex;
+        console.log('GuideMe: Full array mode - using currentStepIndex directly:', actualIndex);
+      } else {
+        // currentSteps is a subset - need to find the actual position
+        // The step at currentStepIndex in currentSteps should be at 
+        // (originalStepIndex + currentStepIndex) in allOriginalSteps
+        // But originalStepIndex might be stale, so let's verify by matching
+        const stepToDelete = this.currentSteps[this.currentStepIndex];
+        
+        if (stepToDelete) {
+          // Find matching step, but start from where we expect it to be
+          const expectedIndex = (this.originalStepIndex || 0) + this.currentStepIndex;
+          
+          // First check if the expected index matches
+          if (expectedIndex < this.allOriginalSteps.length &&
+              this.allOriginalSteps[expectedIndex]?.description === stepToDelete.description) {
+            actualIndex = expectedIndex;
+            console.log('GuideMe: Subset mode - expected index matches:', actualIndex);
+          } else {
+            // Fall back to counting occurrences to find the right duplicate
+            let matchCount = 0;
+            for (let i = 0; i < this.allOriginalSteps.length; i++) {
+              if (this.allOriginalSteps[i].description === stepToDelete.description &&
+                  this.allOriginalSteps[i].element === stepToDelete.element) {
+                matchCount++;
+                // We want the Nth occurrence where N = how many times this step appears in currentSteps up to currentStepIndex
+                let occurrencesInCurrent = 0;
+                for (let j = 0; j <= this.currentStepIndex; j++) {
+                  if (this.currentSteps[j].description === stepToDelete.description &&
+                      this.currentSteps[j].element === stepToDelete.element) {
+                    occurrencesInCurrent++;
+                  }
+                }
+                if (matchCount === occurrencesInCurrent) {
+                  actualIndex = i;
+                  console.log('GuideMe: Subset mode - found by occurrence matching:', actualIndex);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    console.log('GuideMe: Will remove from allOriginalSteps at actualIndex:', actualIndex);
     
     // Remove from current steps
     this.currentSteps.splice(this.currentStepIndex, 1);
@@ -2631,8 +2696,11 @@ class GuideMeContent {
     // Also remove from allOriginalSteps if this is a saved guide replay
     if (this.isSavedGuideReplay && this.allOriginalSteps) {
       console.log('GuideMe: Removing from allOriginalSteps at index:', actualIndex);
-      if (actualIndex < this.allOriginalSteps.length) {
+      if (actualIndex >= 0 && actualIndex < this.allOriginalSteps.length) {
         this.allOriginalSteps.splice(actualIndex, 1);
+        console.log('GuideMe: After removal, allOriginalSteps.length:', this.allOriginalSteps.length);
+      } else {
+        console.log('GuideMe: Index out of bounds, skipping removal from allOriginalSteps');
       }
     }
     
@@ -2801,23 +2869,10 @@ class GuideMeContent {
       if (this.isSavedGuideReplay) {
         console.log('GuideMe: Saved guide replay complete');
         this.showFinalCompletion();
-      } else if (this.isFinalStepBatch) {
-        // AI already told us this was the final batch - no need to ask for more
-        console.log('GuideMe: Final step batch complete - guide done!');
-        this.showFinalCompletion();
       } else {
-        // Check if we should auto-complete based on step count or task type
-        const shouldAutoComplete = this.shouldAutoComplete();
-        
-        if (shouldAutoComplete) {
-          console.log('GuideMe: Auto-completing guide (reached logical end)');
-          this.showFinalCompletion();
-        } else {
-          // Live guide - request continuation from AI
-          console.log('GuideMe: All steps on this page done, requesting continuation...');
-          this.saveGuideState();
-          this.requestContinuation();
-        }
+        // User clicked Done: finish immediately instead of requesting continuation
+        console.log('GuideMe: Final step reached - completing guide by user action');
+        this.showFinalCompletion();
       }
     }
   }
@@ -3376,6 +3431,7 @@ class GuideMeContent {
       el.removeAttribute('data-guideme-id');
     });
     
+    this.lastExtractedElements = {};
     const data = {
       url: window.location.href,
       title: document.title,
@@ -3461,14 +3517,17 @@ class GuideMeContent {
       const nearbyHeading = parent?.querySelector('h1, h2, h3, h4');
       const nearbyContext = nearbyHeading?.textContent?.trim().substring(0, 30) || '';
       
-      data.elements.push({
+      const elementRecord = {
         id: guideId,
         text: (text || ariaLabel || '').substring(0, 60).trim(),
         type: elType,
         location: location || 'page',
         hints: hints.length > 0 ? hints.join(', ') : null,
         near: nearbyContext || null
-      });
+      };
+
+      data.elements.push(elementRecord);
+      this.lastExtractedElements[guideId] = elementRecord;
     };
 
     // PRIORITY 0: Modal/Dialog elements (HIGHEST priority - they overlay everything)
@@ -3479,21 +3538,7 @@ class GuideMeContent {
       });
     });
 
-    // 1. Header elements
-    document.querySelectorAll('header, #masthead, [role="banner"]').forEach(header => {
-      header.querySelectorAll('button, a, [role="button"], [role="menuitem"]').forEach(el => {
-        addElement(el, 'header');
-      });
-    });
-
-    // 2. Sidebar/Navigation elements
-    document.querySelectorAll('aside, [role="complementary"], nav, .sidebar, .side-nav, .menu, [aria-label*="menu"], [aria-label*="Menu"], [aria-label*="navigation"], [role="navigation"]').forEach(sidebar => {
-      sidebar.querySelectorAll('a, button, [role="menuitem"], [role="tab"], li a, li button').forEach(el => {
-        addElement(el, 'sidebar');
-      });
-    });
-
-    // 3. Main content elements (highest priority for actions)
+    // 1. Main content elements (highest priority for actions)
     document.querySelectorAll('main, [role="main"], .main-content, #content, article').forEach(main => {
       // Headings for context
       main.querySelectorAll('h1, h2, h3').forEach(h => {
@@ -3513,6 +3558,20 @@ class GuideMeContent {
       // Interactive elements
       main.querySelectorAll('a, button, [role="button"], input, select').forEach(el => {
         addElement(el, 'main');
+      });
+    });
+
+    // 2. Header elements
+    document.querySelectorAll('header, #masthead, [role="banner"]').forEach(header => {
+      header.querySelectorAll('button, a, [role="button"], [role="menuitem"]').forEach(el => {
+        addElement(el, 'header');
+      });
+    });
+
+    // 3. Sidebar/Navigation elements
+    document.querySelectorAll('aside, [role="complementary"], nav, .sidebar, .side-nav, .menu, [aria-label*="menu"], [aria-label*="Menu"], [aria-label*="navigation"], [role="navigation"]').forEach(sidebar => {
+      sidebar.querySelectorAll('a, button, [role="menuitem"], [role="tab"], li a, li button').forEach(el => {
+        addElement(el, 'sidebar');
       });
     });
 
@@ -3539,8 +3598,9 @@ class GuideMeContent {
 
     console.log('GuideMe: Extracted', data.elements.length, 'elements with IDs');
     
-    // Limit to prevent token overflow
-    data.elements = data.elements.slice(0, 100);
+    // Limit to prevent token overflow (expanded to keep main actions)
+    data.elements = data.elements.slice(0, 150);
+    this.lastDomSnapshot = data;
     return data;
   }
 
@@ -3665,12 +3725,11 @@ class GuideMeContent {
   isVisible(el) {
     const rect = el.getBoundingClientRect();
     const style = window.getComputedStyle(el);
-    return (
-      rect.width > 0 && rect.height > 0 &&
-      style.visibility !== 'hidden' &&
-      style.display !== 'none' &&
-      style.opacity !== '0'
-    );
+    const hasSize = rect.width > 0 && rect.height > 0 && el.getClientRects().length > 0;
+    const shown = style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+    const inFlow = el === document.body || style.position === 'fixed' || el.offsetParent !== null;
+    const notDisabled = !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+    return hasSize && shown && inFlow && notDisabled;
   }
   
   // Generate robust selectors for recording mode - multiple fallback strategies
@@ -3817,6 +3876,9 @@ class GuideMeContent {
       const found = this.findByRobustSelectors(robustSelectors);
       if (found) {
         console.log('GuideMe: ✓ Found by robust selectors');
+        if (selector && selector.startsWith('gm-') && !found.getAttribute('data-guideme-id')) {
+          found.setAttribute('data-guideme-id', selector);
+        }
         return found;
       }
     }
@@ -3857,12 +3919,16 @@ class GuideMeContent {
     // This is the fallback for saved guides where IDs changed
     const description = text || '';
     const keywords = this.extractKeywords(selector + ' ' + description);
-    console.log('GuideMe: Keywords:', keywords);
+    const meta = selector && this.lastExtractedElements ? this.lastExtractedElements[selector] : null;
+    console.log('GuideMe: Keywords:', keywords, 'meta:', meta);
     
     if (keywords.length > 0) {
-      const match = this.findByKeywords(keywords);
+      const match = this.findByKeywords(keywords, meta);
       if (match) {
         console.log('GuideMe: ✓ Found by keywords:', this.getElementText(match).substring(0, 40));
+        if (selector && selector.startsWith('gm-') && !match.getAttribute('data-guideme-id')) {
+          match.setAttribute('data-guideme-id', selector); // Re-stabilize ID for future steps
+        }
         return match;
       }
     }
@@ -4084,7 +4150,36 @@ class GuideMeContent {
       .slice(0, 8);
   }
 
-  findByKeywords(keywords) {
+  inferElementLocation(el) {
+    if (!el) return 'page';
+    if (el.closest('[role="dialog"], [aria-modal="true"], .modal, .dialog, .overlay-content, .popup-content')) return 'modal';
+    if (el.closest('main, [role="main"], .main-content, #content, article')) return 'main';
+    if (el.closest('header, #masthead, [role="banner"]')) return 'header';
+    if (el.closest('aside, [role="complementary"], nav, .sidebar, .side-nav, .menu, [role="navigation"]')) return 'sidebar';
+    return 'page';
+  }
+
+  inferElementHints(el) {
+    const hints = new Set();
+    if (!el) return hints;
+    const style = window.getComputedStyle(el);
+    const bgColor = style.backgroundColor;
+    if (bgColor && !bgColor.includes('rgba(0, 0, 0, 0)') && !bgColor.includes('transparent') && !bgColor.includes('rgb(255, 255, 255)')) {
+      if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') {
+        hints.add('primary-action');
+      }
+    }
+    if (el.getAttribute('aria-expanded') !== null || el.getAttribute('aria-haspopup') !== null) {
+      hints.add('dropdown');
+    }
+    if (el.closest('form')) hints.add('form');
+    if (el.getAttribute('data-testid')) hints.add('testid:' + el.getAttribute('data-testid'));
+    if (el.closest('nav, [role="navigation"], [role="tablist"]')) hints.add('navigation');
+    if (el.closest('[role="dialog"], [aria-modal="true"], .modal, .dialog')) hints.add('in-modal');
+    return hints;
+  }
+
+  findByKeywords(keywords, meta = null) {
     // First try elements with data-guideme-id (current session elements)
     let elements = document.querySelectorAll('[data-guideme-id]');
     
@@ -4093,7 +4188,7 @@ class GuideMeContent {
       elements = document.querySelectorAll('a, button, input, select, [role="button"], [role="link"], [role="menuitem"], [onclick], [data-action]');
     }
     
-    console.log('GuideMe: findByKeywords searching', elements.length, 'elements for keywords:', keywords);
+    console.log('GuideMe: findByKeywords searching', elements.length, 'elements for keywords:', keywords, 'meta:', meta);
     
     let bestMatch = null;
     let bestScore = 0;
@@ -4131,6 +4226,9 @@ class GuideMeContent {
         }
       }
       
+      const candidateLocation = this.inferElementLocation(el);
+      const candidateHints = this.inferElementHints(el);
+
       // Bonus for matching more keywords
       if (matchedKeywords.length > 1) {
         score += matchedKeywords.length * 10;
@@ -4147,6 +4245,31 @@ class GuideMeContent {
       }
       if (elText.length > 100) {
         score -= 20; // Extra penalty for very long text
+      }
+
+      // Location alignment with the originally extracted element
+      if (meta?.location && meta.location === candidateLocation) {
+        score += 25;
+      } else if (meta?.location && candidateLocation === 'main' && meta.location === 'page') {
+        score += 10; // Prefer main over generic page when uncertain
+      }
+
+      // Hint alignment (e.g., primary-action, dropdown)
+      if (meta?.hints) {
+        meta.hints.split(',').map(h => h.trim()).forEach(h => {
+          if (candidateHints.has(h)) {
+            score += 12;
+          }
+        });
+      }
+
+      // Nearby heading/context alignment
+      if (meta?.near) {
+        const nearbyHeading = el.closest('div, section, header, aside, main')?.querySelector('h1, h2, h3, h4');
+        const headingText = nearbyHeading?.textContent?.trim().toLowerCase();
+        if (headingText && headingText.includes(meta.near.toLowerCase())) {
+          score += 12;
+        }
       }
       
       if (score > 0) {
@@ -4517,6 +4640,7 @@ class GuideMeContent {
 
 // Initialize content script
 const guideme = new GuideMeContent();
+window.guideMeInstance = guideme; // Mark as initialized to prevent double-injection
 
 // Inject styles
 const style = document.createElement('style');
@@ -4951,3 +5075,5 @@ style.textContent = `
   }
 `;
 document.head.appendChild(style);
+
+} // End of double-injection guard
