@@ -39,6 +39,9 @@ class GuideMeContent {
     // AI request tracking - prevents highlighting stale elements while AI is processing
     this.isWaitingForAI = false;
     
+    // Click processing flag - prevents double-advancement
+    this.isProcessingClick = false;
+    
     // SPA Navigation Detection
     this.lastUrl = window.location.href;
     this.urlCheckInterval = null;
@@ -2026,6 +2029,7 @@ class GuideMeContent {
 
   startGuide() {
     this.isGuideActive = true;
+    this.isProcessingClick = false; // Reset click processing flag
     // Reset counters for fresh guide (but not if continuing)
     if (this.totalStepsCompleted === 0) {
       this.isMultiPageTask = false;
@@ -2039,6 +2043,7 @@ class GuideMeContent {
   stopGuide() {
     this.isGuideActive = false;
     this.isWaitingForAI = false; // Reset AI waiting flag
+    this.isProcessingClick = false; // Reset click processing flag
     // Cancel any pending retries
     if (this.pendingRetry) {
       clearTimeout(this.pendingRetry);
@@ -2155,6 +2160,12 @@ class GuideMeContent {
     this.clickHandler = async (e) => {
       if (!this.isGuideActive) return;
       
+      // Prevent double-processing
+      if (this.isProcessingClick) {
+        console.log('GuideMe: Already processing a click - ignoring');
+        return;
+      }
+      
       // CRITICAL: Only advance if we have a highlighted element AND user clicked on it
       if (!this.currentHighlightedElement) {
         console.log('GuideMe: Click detected but no highlighted element - ignoring');
@@ -2173,18 +2184,35 @@ class GuideMeContent {
         return;
       }
       
+      // Set flag to prevent double-processing
+      this.isProcessingClick = true;
       console.log('GuideMe: User clicked highlighted element, advancing...');
+      
+      // Get current step info to check if it's a navigation action
+      const currentStep = this.currentSteps[this.currentStepIndex];
+      const isNavigationClick = this.isNavigationStep(currentStep);
       
       // IMMEDIATELY save state before navigation might occur
       this.trackStepCompletion();
       await this.saveStateForNavigation(); // MUST await to ensure data is saved before navigation!
-        
-      // Auto-advance to next step after a short delay (if no navigation)
-      setTimeout(() => {
-        if (this.isGuideActive) {
-          this.nextStep();
-        }
-      }, 600);
+      
+      if (isNavigationClick) {
+        // For navigation clicks, DON'T call nextStep() here
+        // The next page load will resume the guide automatically
+        console.log('GuideMe: Navigation step clicked - waiting for page change');
+        // Clear processing flag after a delay (in case navigation doesn't happen)
+        setTimeout(() => {
+          this.isProcessingClick = false;
+        }, 3000);
+      } else {
+        // For non-navigation clicks, advance after a short delay
+        setTimeout(() => {
+          if (this.isGuideActive) {
+            this.nextStep();
+          }
+          this.isProcessingClick = false;
+        }, 600);
+      }
     };
     document.addEventListener('click', this.clickHandler, true);
 
@@ -2512,13 +2540,43 @@ class GuideMeContent {
     this.controlPanel.querySelector('.guideme-instruction').textContent = 
       step.description || step.instruction || 'Follow this step';
     
+    // Show helpful hint based on action type
     const hintEl = this.controlPanel.querySelector('.guideme-hint');
-    if (step.hint || step.action) {
-      hintEl.textContent = `💡 Action: ${step.action || step.hint}`;
-      hintEl.style.display = 'block';
-    } else {
-      hintEl.style.display = 'none';
+    const action = step.action || 'click';
+    const isNavStep = this.isNavigationStep(step);
+    
+    // Build a clear instruction hint
+    let hintText = '';
+    switch (action) {
+      case 'click':
+      case 'focus':
+        if (isNavStep) {
+          hintText = '👆 Click the highlighted element (this will navigate to a new page)';
+        } else {
+          hintText = '👆 Click the highlighted element to continue';
+        }
+        break;
+      case 'type':
+        hintText = '⌨️ Type in the highlighted field, then click Next →';
+        break;
+      case 'scroll':
+        hintText = '📜 Scroll the page, then click Next →';
+        break;
+      case 'hover':
+        hintText = '🖱️ Hover over the highlighted element';
+        break;
+      case 'wait':
+        hintText = '⏳ Wait for the page to load, then click Next →';
+        break;
+      case 'info':
+        hintText = 'ℹ️ Read this information, then click Next →';
+        break;
+      default:
+        hintText = `💡 Action: ${action}`;
     }
+    
+    hintEl.textContent = hintText;
+    hintEl.style.display = 'block';
 
     // Update buttons
     const prevBtn = this.controlPanel.querySelector('.guideme-prev-btn');
@@ -2528,12 +2586,24 @@ class GuideMeContent {
     
     // On the last step, show "Done ✓" button that completes the guide
     const isLastStep = this.currentStepIndex === this.currentSteps.length - 1;
+    
+    // Disable Next button for click/navigation steps - user must click the element
+    const shouldDisableNext = (action === 'click' || action === 'focus') && !isLastStep;
+    
     if (isLastStep) {
       nextBtn.textContent = '✓ Done';
       nextBtn.title = 'Click to complete this guide';
+      nextBtn.disabled = false;
+    } else if (shouldDisableNext) {
+      nextBtn.textContent = 'Next →';
+      nextBtn.title = 'Click the highlighted element to proceed';
+      nextBtn.disabled = true;
+      nextBtn.style.opacity = '0.5';
     } else {
       nextBtn.textContent = 'Next →';
-      nextBtn.title = '';
+      nextBtn.title = 'Move to next step';
+      nextBtn.disabled = false;
+      nextBtn.style.opacity = '1';
     }
 
     // Update progress bar (pulse if multi-page to show ongoing, but not for final batch)
@@ -3720,6 +3790,62 @@ class GuideMeContent {
     context.isLoading = !!document.querySelector('.loading, .spinner, [aria-busy="true"], .skeleton');
     
     return context;
+  }
+
+  /**
+   * Determine if a step is likely to cause navigation to a new page
+   * Used to handle click behavior differently for navigation vs non-navigation steps
+   */
+  isNavigationStep(step) {
+    if (!step) return false;
+    
+    // Check if the step has explicit navigation marker
+    if (step.causesNavigation === true) return true;
+    if (step.waitAfter?.type === 'navigation') return true;
+    
+    // Check if the highlighted element is a link or navigation element
+    if (this.currentHighlightedElement) {
+      const el = this.currentHighlightedElement;
+      
+      // Direct link with href
+      if (el.tagName === 'A' && el.href && !el.href.startsWith('javascript:') && !el.href.startsWith('#')) {
+        // Check if it's an external link or same-origin navigation
+        const currentHost = window.location.host;
+        const linkHost = new URL(el.href, window.location.origin).host;
+        if (currentHost === linkHost) {
+          // Same origin - check if it's a different path
+          const currentPath = window.location.pathname;
+          const linkPath = new URL(el.href, window.location.origin).pathname;
+          if (currentPath !== linkPath) return true;
+        }
+      }
+      
+      // Button or element inside a link
+      const parentLink = el.closest('a[href]');
+      if (parentLink && parentLink.href && !parentLink.href.startsWith('javascript:') && !parentLink.href.startsWith('#')) {
+        return true;
+      }
+      
+      // Form submit buttons
+      if ((el.tagName === 'BUTTON' || el.tagName === 'INPUT') && el.type === 'submit') {
+        const form = el.closest('form');
+        if (form && form.action && !form.action.includes(window.location.pathname)) {
+          return true;
+        }
+      }
+    }
+    
+    // Check step description for navigation-related keywords
+    const desc = (step.description || step.instruction || '').toLowerCase();
+    const navKeywords = ['submit', 'create', 'save', 'next page', 'go to', 'navigate', 'open', 'redirect'];
+    if (navKeywords.some(kw => desc.includes(kw))) {
+      // Only count as navigation if it's a click action
+      if (step.action === 'click' || !step.action) {
+        return true;
+      }
+    }
+    
+    return false;
   }
 
   isVisible(el) {
