@@ -236,9 +236,9 @@ class GuideMeBackground {
   }
 
   buildContinuationSystemPrompt() {
-    return `You are a website navigation assistant. Given a task and available elements, provide the next steps.
+    return `You are a website navigation assistant continuing a MULTI-PAGE task. The user has navigated to a new page and needs the next steps.
 
-YOUR JOB: Identify which clickable elements the user should interact with to accomplish their task.
+YOUR JOB: Guide the user through EACH PAGE until they reach the final destination where they can complete their task.
 
 OUTPUT FORMAT (JSON only, no markdown):
 {
@@ -246,21 +246,43 @@ OUTPUT FORMAT (JSON only, no markdown):
     {"elementId": "gm-5", "action": "click", "description": "Click the 'Submit' button"}
   ],
   "completed": false,
-  "reason": "Brief explanation of current state"
+  "willNavigate": true,
+  "reason": "Brief explanation - what page are we on and what's next"
 }
+
+CRITICAL - WHEN TO SET completed:
+- completed: FALSE → User still needs to navigate more pages OR final action button NOT visible yet
+- completed: TRUE → User has reached the FINAL page AND can complete the task with visible elements
+
+FOR "CREATE/ADD/NEW" TASKS - BE STRICT:
+- NEVER mark complete just because you found an element with matching text
+- "create branch" is NOT complete until the branch creation input/form is visible
+- "create repository" is NOT complete until on the repository creation page
+- Must see actual form fields or creation buttons, not just navigation links!
+
+EXAMPLE FLOW - "protect main branch":
+- On Settings page → completed: false, find "Branches" link
+- On Branches page → completed: false, find "Add rule" button  
+- On Rule creation page → completed: true, user can now configure
+
+EXAMPLE FLOW - "create a branch":
+- On repo page → completed: false, click branch dropdown  
+- Dropdown open → completed: false, look for "Create branch" option
+- Creation form visible → completed: true
 
 RULES:
 1. Use ONLY element IDs from the provided list (gm-0, gm-1, etc.)
-2. Maximum 3 steps per response - keep it focused
-3. "completed": true ONLY when the task is fully achievable with current elements
-4. Each step description should be clear: "Click [element name]" or "Enter text in [field]"
-5. If the needed element isn't visible, provide steps to reveal it (click dropdown, scroll, etc.)
+2. Maximum 3-5 steps per response
+3. Set willNavigate: true when clicking will change the page/view
+4. Each step description should be clear: "Click [element name]"
+5. If needed element isn't visible, provide steps to reveal it
+6. DON'T complete early - guide user all the way to the final page!
 
 ELEMENT SELECTION:
 - Prefer buttons over links for actions
-- Prefer {primary-action} elements for main tasks
+- Prefer {primary-action} elements for main tasks  
 - Prefer {dropdown} elements when looking for hidden options
-- When multiple elements have same text, use location hints (main > sidebar > header)`;
+- For GitHub: Settings tabs, sidebar links, "Add" buttons`;
   }
 
   buildContinuationUserPrompt(task, completedSteps, url, title, dom) {
@@ -280,19 +302,53 @@ ELEMENT SELECTION:
       ? completedSteps.slice(-3).map((s, i) => `- ${s.description}`).join('\n')
       : 'None';
 
-    return `TASK: "${task}"
+    // Detect site and provide context
+    let siteContext = '';
+    if (url.includes('github.com')) {
+      if (url.includes('/settings/branch_protection_rules/new') || 
+          url.includes('/settings/rules/') ||
+          title.toLowerCase().includes('branch protection rule') ||
+          title.toLowerCase().includes('ruleset')) {
+        siteContext = 'ON BRANCH PROTECTION RULE PAGE - User can now configure protection settings. Set completed: true!';
+      } else if (url.includes('/settings/branches')) {
+        siteContext = 'On Branches settings page. Look for "Add rule" or "Add branch protection rule" button.';
+      } else if (url.includes('/settings')) {
+        siteContext = 'Currently in GitHub Settings. Look for specific setting categories in sidebar.';
+      } else if (url.includes('/new')) {
+        siteContext = 'ON A CREATION PAGE - User can fill out the form. Set completed: true if create/new form is visible!';
+      }
+    }
 
-PAGE: ${title}
+    // Check if task appears to be satisfied based on page content
+    let taskHint = '';
+    const taskLower = task.toLowerCase();
+    const titleLower = title.toLowerCase();
+    if (taskLower.includes('protect') && (titleLower.includes('protection') || titleLower.includes('ruleset'))) {
+      taskHint = '\n\n⚠️ COMPLETION HINT: User asked to "protect" and is now on a protection/ruleset page. Set completed: true!';
+    } else if (taskLower.includes('create') && (url.includes('/new') || titleLower.includes('create') || titleLower.includes('new'))) {
+      taskHint = '\n\n⚠️ COMPLETION HINT: User asked to "create" and is now on a creation page. Set completed: true if form is visible!';
+    }
+
+    return `ORIGINAL TASK: "${task}"
+
+CURRENT PAGE: ${title}
 URL: ${url}
+${siteContext ? `CONTEXT: ${siteContext}` : ''}
 
-COMPLETED (${stepCount} steps, last 3):
+PROGRESS SO FAR (${stepCount} steps completed):
 ${recentSteps}
 
-AVAILABLE ELEMENTS:
+AVAILABLE ELEMENTS ON THIS PAGE:
 ${elementList}
 
-What should the user click next to accomplish "${task}"?
-If the task can be completed with current elements, set completed: true.`;
+Provide the NEXT steps to continue toward: "${task}"
+
+IMPORTANT:
+- If user is NOT on the final page yet, set completed: false and guide them further
+- If clicking will navigate to another page, set willNavigate: true
+- Only set completed: true when the final action/form is visible on THIS page
+- For "create/add/new" tasks: completed: true ONLY when the creation form/dialog is visible!
+- Finding a link with matching text is NOT completion - guide user TO the form!${taskHint}`;
   }
 
   async generateGuide(payload) {
@@ -331,9 +387,16 @@ RESPONSE FORMAT (JSON only, no markdown):
 
 CRITICAL RULES:
 1. ONLY use element IDs from the provided list - never make up IDs
-2. Maximum 3 steps per response
+2. Maximum 3-5 steps per response
 3. Each step = ONE click
 4. Be specific in descriptions: "Click 'Settings' in the sidebar" not just "Click Settings"
+5. ALWAYS provide at least 1 step that moves toward the goal, even if indirectly
+
+NAVIGATION STRATEGY - When the target isn't directly visible:
+- For GitHub: Look for "Settings" tab/link, user menu, repository tabs
+- For settings/configuration: Find "Settings", "Options", "Preferences", gear icons
+- For creating new items: Look for "New", "Create", "Add", "+" buttons
+- DON'T say you can't help - find the CLOSEST element that leads toward the goal
 
 ELEMENT SELECTION PRIORITY:
 When multiple elements have similar text, choose based on:
@@ -341,14 +404,51 @@ When multiple elements have similar text, choose based on:
 2. HINTS: Prefer {primary-action} or {dropdown} over {navigation}
 3. LOCATION: For main tasks, prefer (main) over (sidebar) or (header)
 
-EXAMPLE - "Clone repository":
-- "Code" [link] (header) {navigation} → WRONG - this is a nav tab
-- "Code" [button] (main) {dropdown, clone-button} → CORRECT - opens clone URLs
+GITHUB-SPECIFIC NAVIGATION:
+- "protect branch" → Settings tab → Branches → Add rule
+- "create repository" → "+" icon in header OR "New" button OR user menu → "New repository"
+- "create issue" → Issues tab → "New issue" button
+- "create pull request" → Pull requests tab → "New pull request" button
+- "fork repository" → "Fork" button (usually in header near Star/Watch)
 
-WHEN TO SET completed: true:
-- Simple tasks (find, show, locate): After pointing to the element
-- Action tasks (create, submit, delete): After the final action button is shown
-- Multi-page tasks: Only when on the final page with the submit button visible`;
+WHEN TO SET completed: false (KEEP GOING):
+- User is NOT on the final page yet
+- There are more navigation steps needed (Settings → Branches → Add rule)
+- The final "submit"/"create"/"save" button is NOT visible yet
+- You just pointed to a navigation link (Settings, tabs, menu items)
+- Task says "create/add/new" but no creation form is visible yet
+- You're pointing to a link/button that LEADS TO the action, not the action itself
+
+WHEN TO SET completed: true (STOP):
+- The FINAL action button/form is visible AND user can complete the task NOW
+- User can see input fields, submit buttons, or configuration options
+- Simple "find/show/locate" tasks - after pointing to the target element
+- User has reached the destination page with all needed elements visible
+
+CRITICAL - "CREATE" TASKS:
+- "create branch" → Must reach the branch creation dropdown/form, NOT just the branch link
+- "create repository" → Must reach the "New repository" form page
+- "create issue" → Must reach the issue creation form
+- NEVER mark "create X" as complete until the creation form/dialog is visible!
+
+WHEN TO SET willNavigate: true:
+- When clicking will load a new page or significantly change the view
+- Settings links, tab switches, menu navigation, form submissions
+- Dropdowns that reveal forms count as navigation too!
+- This tells the extension to continue the guide after the page changes!
+
+EXAMPLE - "protect main branch" (multi-page):
+Page 1 (repo home): completed: false, willNavigate: true → click Settings
+Page 2 (settings): completed: false, willNavigate: true → click Branches  
+Page 3 (branches): completed: false → click Add rule
+Page 4 (rule form): completed: true → user can now configure protection
+
+EXAMPLE - "create a branch":
+Step 1: completed: false → click branch dropdown (shows "1 Branch" or branch name)
+Step 2: completed: false → type in "Find or create a branch" input  
+Step 3: completed: true → click "Create branch: X" button when it appears
+
+NEVER return empty steps array - always provide guidance toward the goal.`;
   }
 
   buildUserPrompt(task, url, title, dom) {
@@ -375,17 +475,43 @@ WHEN TO SET completed: true:
     if (dom.pageContext?.hasModal) {
       stateInfo = '\n⚠️ A MODAL/DIALOG IS OPEN - prioritize {in-modal} elements!';
     }
+    
+    // Identify likely navigation elements for the AI
+    const navElements = dom.elements
+      .filter(e => {
+        const text = (e.text || '').toLowerCase();
+        const hints = (e.hints || '').toLowerCase();
+        return text.includes('settings') || text.includes('new') || 
+               text.includes('create') || text === '+' ||
+               hints.includes('dropdown') || hints.includes('menu') ||
+               e.location === 'header' || e.location === 'nav';
+      })
+      .slice(0, 10)
+      .map(e => `${e.id}: "${e.text}"`)
+      .join(', ');
+    
+    // Detect site type for better guidance
+    let siteHint = '';
+    if (url.includes('github.com')) {
+      siteHint = '\nSITE: GitHub - Settings tab has branch protection, "+" icon or user menu has "New repository"';
+    } else if (url.includes('gitlab.com')) {
+      siteHint = '\nSITE: GitLab - Settings in left sidebar';
+    }
 
     return `PAGE: ${title}
 URL: ${url}
-CONTEXT: ${headings || 'Main page'}${stateInfo}
+CONTEXT: ${headings || 'Main page'}${stateInfo}${siteHint}
 
 TASK: "${task}"
 
-ELEMENTS (use these IDs):
+KEY NAVIGATION ELEMENTS: ${navElements || 'None identified'}
+
+ALL ELEMENTS (use these IDs):
 ${elementList}
 
-Provide steps to accomplish: "${task}"`;
+Provide steps to accomplish: "${task}"
+If the direct action element isn't visible, guide the user to navigate closer (e.g., click Settings first).
+ALWAYS provide at least 1 actionable step - never return empty steps.`;
   }
 
   condenseDom(dom) {
@@ -642,6 +768,20 @@ Provide steps to accomplish: "${task}"`;
       // CRITICAL: If AI returns 0 steps on initial request, that's an error
       // (Empty steps on continuation with completed:true is OK)
       if (validatedSteps.length === 0 && !parsed.completed) {
+        // Check if there's a reason provided
+        const reason = parsed.reason || parsed.message || parsed.note;
+        if (reason) {
+          // Provide a helpful step with the reason instead of failing
+          return {
+            steps: [{
+              element: 'body',
+              action: 'info',
+              description: `Navigation hint: ${reason}. Look for Settings, menus, or navigation tabs to proceed.`
+            }],
+            canComplete: false,
+            note: reason
+          };
+        }
         throw new Error('AI returned no steps. Try rephrasing your question or being more specific.');
       }
 

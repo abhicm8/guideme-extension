@@ -169,6 +169,25 @@ class GuideMeContent {
       console.log('GuideMe: No active guide, ignoring navigation');
       return;
     }
+    
+    // CRITICAL: If we're processing a click, don't advance here
+    // BUT if URL changed, we should continue the guide!
+    if (this.isProcessingClick) {
+      console.log('GuideMe: SPA navigation during click processing - will request continuation');
+      // URL changed during click, so request continuation after a delay
+      setTimeout(async () => {
+        if (this.isGuideActive && !this.isSavedGuideReplay) {
+          this.isProcessingClick = false;
+          this.isWaitingForAI = true;
+          this.clearHighlights();
+          this.currentHighlightedElement = null;
+          await this.waitForPageReady();
+          console.log('GuideMe: Requesting AI continuation after click-triggered navigation...');
+          this.requestGuideContinuation();
+        }
+      }, 800);
+      return;
+    }
 
     // For SAVED GUIDE REPLAYS - use remaining steps, NO AI call
     if (this.isSavedGuideReplay) {
@@ -553,10 +572,11 @@ class GuideMeContent {
         this.isWaitingForAI = false; // Clear flag
         await this.showTaskCompleted();
       } else {
-        // No steps and not completed - might be an issue
+        // No steps and not completed - treat as complete to avoid stuck state
         this.hideContinuationLoading();
         this.isWaitingForAI = false; // Clear flag
-        console.log('GuideMe: No more steps for this page (odd state)');
+        console.log('GuideMe: No more steps returned - treating as complete');
+        await this.showTaskCompleted();
       }
     } catch (error) {
       console.error('GuideMe: Failed to continue guide:', error);
@@ -641,6 +661,9 @@ class GuideMeContent {
       await this.autoSaveGuideIfEnabled();
     }
     
+    // Clear highlights and control panel FIRST
+    this.clearHighlights();
+    
     // THEN clear all state to prevent re-activation
     this.isGuideActive = false;
     await this.clearGuideState();
@@ -658,6 +681,9 @@ class GuideMeContent {
     `;
     document.body.appendChild(panel);
     setTimeout(() => panel.remove(), 4000);
+    
+    // Stop the guide (removes control panel)
+    this.stopGuide();
   }
 
   // ============ SAVE GUIDE FROM FLOATING PANEL ============
@@ -1126,10 +1152,13 @@ class GuideMeContent {
         console.log('GuideMe: isFinalStepBatch:', this.isFinalStepBatch);
         
         // For saved/recorded guides, store ALL original steps for multi-page navigation
+        // IMPORTANT: Deep copy each step to prevent shared references
         if (this.isSavedGuideReplay) {
-          this.allOriginalSteps = [...message.payload.steps];
+          this.allOriginalSteps = message.payload.steps.map(step => ({...step}));
+          // Also ensure currentSteps is a deep copy to prevent cross-contamination
+          this.currentSteps = message.payload.steps.map(step => ({...step}));
           this.originalStepIndex = 0; // Reset position tracking
-          console.log('GuideMe: Stored all', this.allOriginalSteps.length, 'original steps for replay');
+          console.log('GuideMe: Stored all', this.allOriginalSteps.length, 'original steps for replay (deep copied)');
         } else {
           this.allOriginalSteps = null;
           this.originalStepIndex = 0;
@@ -2200,10 +2229,26 @@ class GuideMeContent {
         // For navigation clicks, DON'T call nextStep() here
         // The next page load will resume the guide automatically
         console.log('GuideMe: Navigation step clicked - waiting for page change');
+        // Store the current step index so we can check if it changed
+        const stepIndexAtClick = this.currentStepIndex;
         // Clear processing flag after a delay (in case navigation doesn't happen)
         setTimeout(() => {
           this.isProcessingClick = false;
-        }, 3000);
+          // Only auto-advance if:
+          // 1. Guide is still active
+          // 2. We're still on the same page (no navigation occurred)
+          // 3. We're still on the SAME step (nothing else advanced us)
+          if (this.isGuideActive && 
+              this.lastUrl === window.location.href && 
+              this.currentStepIndex === stepIndexAtClick) {
+            console.log('GuideMe: Navigation didnt occur and still on same step, advancing manually');
+            this.nextStep();
+          } else {
+            console.log('GuideMe: Not auto-advancing - guide active:', this.isGuideActive, 
+                        'same URL:', this.lastUrl === window.location.href,
+                        'same step:', this.currentStepIndex === stepIndexAtClick);
+          }
+        }, 2000); // Increased to 2s to give more time for navigation
       } else {
         // For non-navigation clicks, advance after a short delay
         setTimeout(() => {
@@ -2584,16 +2629,24 @@ class GuideMeContent {
     
     prevBtn.disabled = this.currentStepIndex === 0 && this.totalStepsCompleted === 0;
     
-    // On the last step, show "Done ✓" button that completes the guide
+    // On the last step, show appropriate button based on whether this is the final batch
     const isLastStep = this.currentStepIndex === this.currentSteps.length - 1;
     
     // Disable Next button for click/navigation steps - user must click the element
     const shouldDisableNext = (action === 'click' || action === 'focus') && !isLastStep;
     
     if (isLastStep) {
-      nextBtn.textContent = '✓ Done';
-      nextBtn.title = 'Click to complete this guide';
+      if (this.isFinalStepBatch) {
+        // This is truly the final step - show Done
+        nextBtn.textContent = '✓ Done';
+        nextBtn.title = 'Click to complete this guide';
+      } else {
+        // More steps will come after this - show Continue
+        nextBtn.textContent = 'Continue →';
+        nextBtn.title = 'Continue to next steps';
+      }
       nextBtn.disabled = false;
+      nextBtn.style.opacity = '1';
     } else if (shouldDisableNext) {
       nextBtn.textContent = 'Next →';
       nextBtn.title = 'Click the highlighted element to proceed';
@@ -2652,23 +2705,49 @@ class GuideMeContent {
     console.log('GuideMe: saveInlineEdit - currentStepIndex:', this.currentStepIndex);
     console.log('GuideMe: saveInlineEdit - savedGuideId:', this.savedGuideId);
     console.log('GuideMe: saveInlineEdit - isSavedGuideReplay:', this.isSavedGuideReplay);
+    console.log('GuideMe: saveInlineEdit - currentSteps.length:', this.currentSteps.length);
+    console.log('GuideMe: saveInlineEdit - allOriginalSteps?.length:', this.allOriginalSteps?.length);
     
-    // Update current step
+    // Update current step (this updates the visible step)
     this.currentSteps[this.currentStepIndex].description = newDescription;
     this.currentSteps[this.currentStepIndex].instruction = newDescription;
     
     // For saved guide replays, we need to update the SAME step in allOriginalSteps
-    // The mapping depends on where we are in the guide
     if (this.isSavedGuideReplay && this.allOriginalSteps) {
-      // Calculate the actual index in the original steps array
-      // originalStepIndex tracks how many steps have been completed across pages
-      // currentStepIndex is the current position in the visible steps
-      const actualIndex = (this.originalStepIndex || 0) + this.currentStepIndex;
-      console.log('GuideMe: Updating allOriginalSteps at index:', actualIndex);
+      // For single-page guides (currentSteps.length === allOriginalSteps.length),
+      // currentStepIndex directly maps to allOriginalSteps
+      // For multi-page where currentSteps is a subset, we need to calculate the offset
+      let actualIndex;
       
-      if (this.allOriginalSteps[actualIndex]) {
+      if (this.currentSteps.length === this.allOriginalSteps.length) {
+        // Single-page or full guide visible - direct index mapping
+        actualIndex = this.currentStepIndex;
+        console.log('GuideMe: Single-page mode - using currentStepIndex directly:', actualIndex);
+      } else {
+        // Multi-page scenario - currentSteps is a subset of allOriginalSteps
+        // The current visible step corresponds to position in full guide
+        // We need to match by step content to find the right index
+        const currentStep = this.currentSteps[this.currentStepIndex];
+        actualIndex = this.allOriginalSteps.findIndex((s, idx) => {
+          // Match by original properties (before edit)
+          return s.action === currentStep.action && 
+                 s.element === currentStep.element &&
+                 idx >= (this.allOriginalSteps.length - this.currentSteps.length);
+        });
+        
+        // Fallback to linear offset if no match found
+        if (actualIndex === -1) {
+          actualIndex = (this.allOriginalSteps.length - this.currentSteps.length) + this.currentStepIndex;
+        }
+        console.log('GuideMe: Multi-page mode - calculated actualIndex:', actualIndex);
+      }
+      
+      if (actualIndex >= 0 && actualIndex < this.allOriginalSteps.length) {
         this.allOriginalSteps[actualIndex].description = newDescription;
         this.allOriginalSteps[actualIndex].instruction = newDescription;
+        console.log('GuideMe: Updated allOriginalSteps at index:', actualIndex);
+      } else {
+        console.log('GuideMe: actualIndex out of bounds:', actualIndex);
       }
     }
     
@@ -2874,6 +2953,7 @@ class GuideMeContent {
     if (this.currentStepIndex > 0) {
       this.currentStepIndex--;
       this.pendingRetry = null; // Cancel any pending retries
+      this.isProcessingClick = false; // Reset click processing so user can click again
       this.highlightStep(this.currentStepIndex);
       this.updateControlPanel();
       this.saveGuideState(); // Save progress
@@ -2881,6 +2961,14 @@ class GuideMeContent {
   }
 
   nextStep() {
+    // Prevent rapid successive calls to nextStep
+    const now = Date.now();
+    if (this._lastNextStepTime && (now - this._lastNextStepTime) < 500) {
+      console.log('GuideMe: nextStep() called too rapidly, ignoring');
+      return;
+    }
+    this._lastNextStepTime = now;
+    
     // For live guides (not replay), track the completed step
     const completedStep = this.currentSteps[this.currentStepIndex];
     
@@ -2939,10 +3027,17 @@ class GuideMeContent {
       if (this.isSavedGuideReplay) {
         console.log('GuideMe: Saved guide replay complete');
         this.showFinalCompletion();
-      } else {
-        // User clicked Done: finish immediately instead of requesting continuation
-        console.log('GuideMe: Final step reached - completing guide by user action');
+      } else if (this.isFinalStepBatch) {
+        // AI marked this as the final batch - we're done!
+        console.log('GuideMe: Final batch complete - finishing guide');
         this.showFinalCompletion();
+      } else {
+        // NOT the final batch - request AI continuation for next steps
+        console.log('GuideMe: Batch complete but not final - requesting AI continuation');
+        this.isWaitingForAI = true;
+        this.clearHighlights();
+        this.currentHighlightedElement = null;
+        this.requestGuideContinuation();
       }
     }
   }
@@ -3795,6 +3890,7 @@ class GuideMeContent {
   /**
    * Determine if a step is likely to cause navigation to a new page
    * Used to handle click behavior differently for navigation vs non-navigation steps
+   * CONSERVATIVE: Only return true for definite page-changing navigations
    */
   isNavigationStep(step) {
     if (!step) return false;
@@ -3807,43 +3903,84 @@ class GuideMeContent {
     if (this.currentHighlightedElement) {
       const el = this.currentHighlightedElement;
       
+      // Check for SPA indicators - these buttons don't cause full navigation
+      // Common SPA frameworks add these attributes
+      const isSpaButton = el.hasAttribute('data-toggle') || 
+                          el.hasAttribute('data-target') ||
+                          el.hasAttribute('data-bs-toggle') ||
+                          el.hasAttribute('data-action') ||
+                          el.getAttribute('role') === 'tab' ||
+                          el.getAttribute('role') === 'button' ||
+                          el.classList.contains('dropdown-toggle') ||
+                          el.classList.contains('accordion-button') ||
+                          el.classList.contains('modal-trigger');
+      
+      if (isSpaButton) {
+        console.log('GuideMe: SPA button detected, not treating as navigation');
+        return false;
+      }
+      
       // Direct link with href
       if (el.tagName === 'A' && el.href && !el.href.startsWith('javascript:') && !el.href.startsWith('#')) {
         // Check if it's an external link or same-origin navigation
         const currentHost = window.location.host;
-        const linkHost = new URL(el.href, window.location.origin).host;
-        if (currentHost === linkHost) {
-          // Same origin - check if it's a different path
-          const currentPath = window.location.pathname;
-          const linkPath = new URL(el.href, window.location.origin).pathname;
-          if (currentPath !== linkPath) return true;
+        try {
+          const linkUrl = new URL(el.href, window.location.origin);
+          const linkHost = linkUrl.host;
+          if (currentHost === linkHost) {
+            // Same origin - check if it's a different path (not just hash/query change)
+            const currentPath = window.location.pathname;
+            const linkPath = linkUrl.pathname;
+            // Only consider as navigation if path is genuinely different
+            if (currentPath !== linkPath && !el.href.includes('#')) {
+              return true;
+            }
+          } else {
+            // External link - definitely navigation
+            return true;
+          }
+        } catch (e) {
+          // Invalid URL, not navigation
+          return false;
         }
       }
       
-      // Button or element inside a link
+      // Button or element inside a link - be more conservative
       const parentLink = el.closest('a[href]');
-      if (parentLink && parentLink.href && !parentLink.href.startsWith('javascript:') && !parentLink.href.startsWith('#')) {
-        return true;
+      if (parentLink && parentLink.href && 
+          !parentLink.href.startsWith('javascript:') && 
+          !parentLink.href.startsWith('#') &&
+          !parentLink.href.includes('#')) {
+        try {
+          const linkUrl = new URL(parentLink.href, window.location.origin);
+          const currentPath = window.location.pathname;
+          const linkPath = linkUrl.pathname;
+          if (currentPath !== linkPath) {
+            return true;
+          }
+        } catch (e) {
+          return false;
+        }
       }
       
-      // Form submit buttons
+      // Form submit buttons - only if form action goes to different page
       if ((el.tagName === 'BUTTON' || el.tagName === 'INPUT') && el.type === 'submit') {
         const form = el.closest('form');
-        if (form && form.action && !form.action.includes(window.location.pathname)) {
-          return true;
+        if (form && form.action) {
+          try {
+            const formUrl = new URL(form.action, window.location.origin);
+            if (formUrl.pathname !== window.location.pathname) {
+              return true;
+            }
+          } catch (e) {
+            return false;
+          }
         }
       }
     }
     
-    // Check step description for navigation-related keywords
-    const desc = (step.description || step.instruction || '').toLowerCase();
-    const navKeywords = ['submit', 'create', 'save', 'next page', 'go to', 'navigate', 'open', 'redirect'];
-    if (navKeywords.some(kw => desc.includes(kw))) {
-      // Only count as navigation if it's a click action
-      if (step.action === 'click' || !step.action) {
-        return true;
-      }
-    }
+    // DON'T rely on description keywords - too unreliable
+    // Keywords like 'submit', 'save', 'create' often don't cause page navigation
     
     return false;
   }
