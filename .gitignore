@@ -42,3 +42,11 @@ coverage/
 # Temporary files
 tmp/
 temp/
+
+# Miscellaneous
+HIGH_VALUE_GUIDES.md
+logs.txt
+SOCIAL_COPY.md
+THE_HARDEST_PROBLEM.md
+VIDEO_SCRIPTS.md
+LAUNCH_CHECKLIST.md

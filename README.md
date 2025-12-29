@@ -9,8 +9,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Chrome Extension](https://img.shields.io/badge/Platform-Chrome%20Extension-blue)](https://developer.chrome.com/docs/extensions/)
 [![AI Powered](https://img.shields.io/badge/AI-Gemini%20%7C%20OpenAI%20%7C%20Claude-purple)](https://ai.google.dev/)
+[![Video Tutorials](https://img.shields.io/badge/📹_Video-Tutorials-red?logo=youtube)](https://www.youtube.com/playlist?list=PLnhnGJlc9teGAHyv3gaXkxPGkjik1pHTi)
 
-[Features](#-features) • [Installation](#-installation) • [Usage](#-usage) • [Contributing](#-contributing--guide-creation)
+[Features](#-features) • [Installation](#-installation) • [Usage](#-usage) • [Video Tutorials](https://www.youtube.com/playlist?list=PLnhnGJlc9teGAHyv3gaXkxPGkjik1pHTi) • [Contributing](#-contributing--guide-creation)
 
 </div>
 
@@ -43,8 +44,20 @@ Most AI tools **summarize pages** or **give you text instructions** you have to 
 2. Identify the exact elements to click
 3. Highlight them one by one
 4. Guide you through multi-page flows automatically
+5. **Export to automation scripts** (Puppeteer, Playwright, Selenium) for testing!
 
 **No more hunting through menus. No more taking notes from YouTube tutorials.**
+
+### 🤖 Bonus: Test Automation Made Easy
+
+**Beyond just guiding users, GuideMe doubles as a test automation recorder!**
+
+Manually record your clicks, export the guide, and instantly convert it into executable test scripts:
+- **Puppeteer** (Node.js automation)
+- **Playwright** (Cross-browser testing)
+- **Selenium** (Python automation)
+
+Perfect for QA engineers who need to create regression tests, or developers building CI/CD pipelines. See [AUTOMATION_EXPORT.md](AUTOMATION_EXPORT.md) for details.
 
 ---
 
@@ -57,14 +70,16 @@ Most AI tools **summarize pages** or **give you text instructions** you have to 
 | Text instructions | Visual guidance |
 | One-time answer | Save and replay guides forever |
 
-### Two Modes
+### Three Powerful Modes
 
 1. **AI Mode** - Ask any question, AI analyzes the page and creates a guide on-the-fly
-2. **Guide Mode** - Replay saved guides without any AI calls (works offline!)
+2. **Recording Mode** - Manually record your clicks step-by-step (perfect for automation export!)
+3. **Replay Mode** - Replay saved guides without any AI calls (works offline!)
 
-This helps both:
+This helps:
 - **Users** who just want to get things done
-- **Developers/teams** who can create guides for their users
+- **QA Engineers** who need to create automated test scripts
+- **Developers/teams** who can create guides and tests for their users
 
 ---
 
@@ -155,8 +170,26 @@ The gap between "working demo" and "magical experience" is where the interesting
 - 📁 **Categories** - Organize by type
 - 🔍 **Search & Filter** - Find guides quickly
 - 📤 **Export/Import** - Share `.guideme` files
+- 🤖 **Automation Export** - Convert to Puppeteer/Playwright/Selenium scripts
 
-## 📸 Screenshots
+## 📸 Screenshots & Video Tutorials
+
+### 📹 Watch GuideMe in Action
+
+**New to GuideMe? Watch our video tutorials!**
+
+[![GuideMe Tutorial Playlist](https://img.shields.io/badge/▶️_Watch-Tutorial_Playlist-red?style=for-the-badge&logo=youtube)](https://www.youtube.com/playlist?list=PLnhnGJlc9teGAHyv3gaXkxPGkjik1pHTi)
+
+Learn how to:
+- Install and set up GuideMe
+- Create AI-powered guides
+- Record guides manually
+- Export to automation scripts (Puppeteer, Playwright, Selenium)
+- Share guides with your team
+
+---
+
+### Screenshots
 
 <img width="1272" height="668" alt="GuideMe in action" src="https://github.com/user-attachments/assets/ac876298-a78a-4d7f-93c5-3a264bf0c2fe" />
 
@@ -240,6 +273,27 @@ Managing the api keys
 4. They can **Import** it and use it immediately!
 
 *Great for teams, documentation, or helping friends navigate complex sites.*
+
+### 🤖 Automation Export (QA Engineers & Developers)
+
+**Turn your guides into executable test scripts!**
+
+1. Create or open a saved guide (manually recorded guides work best!)
+2. Click the **automation export** icon
+3. Choose your framework:
+   - **Puppeteer** (Node.js browser automation)
+   - **Playwright** (Cross-browser testing)
+   - **Selenium** (Python automation)
+4. Download the generated script
+5. Run it in your CI/CD pipeline!
+
+**Perfect for:**
+- Regression testing
+- Automated QA workflows
+- CI/CD integration
+- End-to-end testing
+
+📖 **See [AUTOMATION_EXPORT.md](AUTOMATION_EXPORT.md) for detailed documentation and examples.**
 
 ### Tips
 - 🔄 **Can't find element?** Click the refresh button to re-scan the page
