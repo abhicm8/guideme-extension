@@ -2309,6 +2309,7 @@ class GuideMeContent {
   }
 
   removeEventListeners() {
+    // CRITICAL: Clean up all event listeners to prevent memory leaks
     if (this.beforeUnloadHandler) {
       window.removeEventListener('beforeunload', this.beforeUnloadHandler);
       this.beforeUnloadHandler = null;
@@ -2328,6 +2329,34 @@ class GuideMeContent {
     if (this.mutationObserver) {
       this.mutationObserver.disconnect();
       this.mutationObserver = null;
+    }
+    
+    // Clean up SPA navigation detection handlers
+    if (this.popstateHandler) {
+      window.removeEventListener('popstate', this.popstateHandler);
+      this.popstateHandler = null;
+    }
+    
+    // Restore original history methods
+    if (this.originalPushState) {
+      history.pushState = this.originalPushState;
+      this.originalPushState = null;
+    }
+    if (this.originalReplaceState) {
+      history.replaceState = this.originalReplaceState;
+      this.originalReplaceState = null;
+    }
+    
+    // Clear URL check interval (prevent ongoing polling)
+    if (this.urlCheckInterval) {
+      clearInterval(this.urlCheckInterval);
+      this.urlCheckInterval = null;
+    }
+    
+    // Clear pending retry timeouts
+    if (this.pendingRetry) {
+      clearTimeout(this.pendingRetry);
+      this.pendingRetry = null;
     }
   }
 
@@ -4325,6 +4354,16 @@ class GuideMeContent {
       }
     }
     
+    // Priority 11: FINAL FALLBACK - Fuzzy text matching
+    // If element has textContent, try fuzzy match (allows minor typos/changes)
+    if (selectors.textContent) {
+      const el = this.findByFuzzyText(selectors.textContent, selectors.tagName);
+      if (el) {
+        console.log('GuideMe: Found by fuzzy text match');
+        return el;
+      }
+    }
+    
     console.log('GuideMe: No element found by robust selectors');
     return null;
   }
@@ -4762,6 +4801,131 @@ class GuideMeContent {
     }
     
     return null;
+  }
+
+  // Fuzzy text matching - handles minor typos and changes in text
+  // Useful when guides are used on slightly different versions of a website
+  findByFuzzyText(searchText, tagName = null) {
+    if (!searchText || searchText.length < 2) return null;
+    
+    const lower = searchText.toLowerCase().trim();
+    const searchWords = lower.split(/\s+/);
+    
+    console.log('GuideMe: findByFuzzyText searching for:', lower, 'tag:', tagName);
+    
+    // Get candidate elements
+    let elements;
+    if (tagName) {
+      elements = document.querySelectorAll(tagName);
+    } else {
+      elements = document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="option"], input, label');
+    }
+    
+    let bestMatch = null;
+    let bestScore = 0;
+    
+    for (const el of elements) {
+      if (!this.isVisible(el)) continue;
+      
+      const elText = this.getElementText(el).toLowerCase().trim();
+      const elWords = elText.split(/\s+/);
+      
+      // Calculate fuzzy match score
+      let score = 0;
+      const matchedWords = [];
+      
+      // Strategy 1: Check if all search words are present (order-independent)
+      const allWordsPresent = searchWords.every(word => 
+        elWords.some(w => w === word || w.includes(word) || word.includes(w))
+      );
+      if (allWordsPresent) {
+        score += 40; // Strong score if all words present
+        matchedWords.push('allWords');
+      }
+      
+      // Strategy 2: Check for substring match (case-insensitive)
+      if (elText.includes(lower)) {
+        score += 35;
+        matchedWords.push('substring');
+      }
+      
+      // Strategy 3: Check for partial word matches
+      searchWords.forEach(word => {
+        elWords.forEach(elWord => {
+          // Exact word match
+          if (elWord === word) {
+            score += 20;
+          }
+          // Word contains search term
+          else if (word.length > 3 && elWord.includes(word)) {
+            score += 12;
+          }
+          // Search term contains word (for shorthand matching)
+          else if (word.length > 3 && word.includes(elWord) && elWord.length > 3) {
+            score += 8;
+          }
+          // Levenshtein distance (handles typos)
+          else if (this.levenshteinDistance(word, elWord) <= 2 && word.length > 3) {
+            score += 6;
+            matchedWords.push(word + '~' + elWord);
+          }
+        });
+      });
+      
+      // Strategy 4: Prefer shorter, more specific elements
+      if (elText.length <= 30) {
+        score += 5;
+      }
+      
+      // Penalty for very long text (probably a container)
+      if (elText.length > 100) {
+        score -= 15;
+      }
+      
+      if (score > bestScore && score > 15) {
+        bestScore = score;
+        bestMatch = el;
+      }
+    }
+    
+    if (bestMatch) {
+      console.log('GuideMe: findByFuzzyText best match:', this.getElementText(bestMatch).substring(0, 50), 'score:', bestScore);
+    } else {
+      console.log('GuideMe: No fuzzy match found for:', lower);
+    }
+    
+    return bestMatch;
+  }
+  
+  // Calculate Levenshtein distance (edit distance) between two strings
+  // Useful for handling typos: "Submit" vs "Sbmit" would have distance of 1
+  levenshteinDistance(a, b) {
+    const aLen = a.length;
+    const bLen = b.length;
+    
+    if (aLen === 0) return bLen;
+    if (bLen === 0) return aLen;
+    
+    // Create a 2D array for dynamic programming
+    const matrix = Array(aLen + 1).fill(null).map(() => Array(bLen + 1));
+    
+    // Initialize first column and row
+    for (let i = 0; i <= aLen; i++) matrix[i][0] = i;
+    for (let j = 0; j <= bLen; j++) matrix[0][j] = j;
+    
+    // Fill the matrix
+    for (let i = 1; i <= aLen; i++) {
+      for (let j = 1; j <= bLen; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1,      // deletion
+          matrix[i][j - 1] + 1,      // insertion
+          matrix[i - 1][j - 1] + cost // substitution
+        );
+      }
+    }
+    
+    return matrix[aLen][bLen];
   }
 
   findBestMatch(searchTerms) {

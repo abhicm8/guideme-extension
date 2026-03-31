@@ -13,6 +13,9 @@ class GuideMePopup {
 
     // Voice recognition
     this.isListening = false;
+    
+    // Race condition prevention - track if guide is being generated
+    this.isGeneratingGuide = false;
 
     // Guide management state
     this.allGuides = [];
@@ -113,6 +116,7 @@ class GuideMePopup {
     this.highlightColor = document.getElementById('highlightColor');
     this.saveSettingsBtn = document.getElementById('saveSettingsBtn');
     this.providerHint = document.getElementById('providerHint');
+    this.darkModeToggle = document.getElementById('darkModeToggle');
 
     // Guide view elements
     this.stopGuideBtn = document.getElementById('stopGuideBtn');
@@ -235,6 +239,7 @@ class GuideMePopup {
     // Settings
     this.saveSettingsBtn.addEventListener('click', () => this.saveSettings());
     this.apiProvider.addEventListener('change', () => this.updateProviderHint());
+    this.darkModeToggle.addEventListener('click', () => this.toggleDarkMode());
 
     // Guide navigation
     this.prevStepBtn.addEventListener('click', () => this.navigateStep(-1));
@@ -928,13 +933,16 @@ class GuideMePopup {
 
   async loadSettings() {
     try {
-      const result = await chrome.storage.local.get(['apiProvider', 'apiKey', 'highlightColor', 'autoSaveGuides']);
+      const result = await chrome.storage.local.get(['apiProvider', 'apiKey', 'highlightColor', 'autoSaveGuides', 'darkMode']);
       if (result.apiProvider) this.settings.apiProvider = result.apiProvider;
       if (result.apiKey) this.settings.apiKey = result.apiKey;
       if (result.highlightColor) this.settings.highlightColor = result.highlightColor;
       
       // Auto-save defaults to true
       this.settings.autoSaveGuides = result.autoSaveGuides !== false;
+      
+      // Dark mode - default to system preference
+      this.settings.darkMode = result.darkMode !== undefined ? result.darkMode : this.getSystemDarkModePreference();
 
       // Update form
       if (this.apiProvider) {
@@ -947,8 +955,51 @@ class GuideMePopup {
       if (this.autoSaveToggle) {
         this.autoSaveToggle.checked = this.settings.autoSaveGuides;
       }
+      
+      // Apply dark mode
+      this.applyDarkMode();
     } catch (error) {
       console.error('Failed to load settings:', error);
+    }
+  }
+  
+  getSystemDarkModePreference() {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+  
+  applyDarkMode() {
+    const isDark = this.settings.darkMode;
+    const body = document.body;
+    
+    if (isDark) {
+      body.classList.add('dark-mode');
+      body.classList.remove('light-mode');
+    } else {
+      body.classList.add('light-mode');
+      body.classList.remove('dark-mode');
+    }
+    
+    // Update toggle button state
+    if (this.darkModeToggle) {
+      if (isDark) {
+        this.darkModeToggle.classList.add('active');
+      } else {
+        this.darkModeToggle.classList.remove('active');
+      }
+    }
+    
+    console.log('GuideMe: Dark mode', isDark ? 'enabled' : 'disabled');
+  }
+  
+  toggleDarkMode() {
+    this.settings.darkMode = !this.settings.darkMode;
+    this.applyDarkMode();
+    
+    // Save preference
+    try {
+      chrome.storage.local.set({ darkMode: this.settings.darkMode });
+    } catch (error) {
+      console.error('Failed to save dark mode preference:', error);
     }
   }
 
@@ -966,6 +1017,7 @@ class GuideMePopup {
     this.settings.apiProvider = this.apiProvider.value;
     this.settings.apiKey = this.apiKey.value;
     this.settings.highlightColor = this.highlightColor.value;
+    this.settings.darkMode = document.body.classList.contains('dark-mode');
 
     try {
       await chrome.storage.local.set(this.settings);
@@ -1039,7 +1091,14 @@ class GuideMePopup {
       this.showStatus('Please add your API key in settings', 'error');
       return;
     }
-
+    
+    // CRITICAL: Prevent race condition - don't allow multiple simultaneous guide generations
+    if (this.isGeneratingGuide) {
+      this.showStatus('A guide is already being generated. Please wait...', 'error');
+      return;
+    }
+    
+    this.isGeneratingGuide = true;
     this.guideBtn.disabled = true;
     this.guideBtn.innerHTML = '<span class="icon btn-icon"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg></span> Analyzing...';
     this.showStatus('Reading page and generating guide...', 'loading');
@@ -1122,6 +1181,7 @@ class GuideMePopup {
       console.error('Guide generation failed:', error);
       this.showStatus(`Error: ${error.message}`, 'error');
     } finally {
+      this.isGeneratingGuide = false;
       this.guideBtn.disabled = false;
       this.guideBtn.innerHTML = '<span class="icon btn-icon"><svg viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg></span> Guide Me';
     }

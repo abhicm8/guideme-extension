@@ -69,6 +69,53 @@
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
+  
+  /* Light Mode (default) */
+  --bg-primary: #ffffff;
+  --bg-secondary: #f9fafb;
+  --bg-tertiary: #f3f4f6;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-tertiary: #9ca3af;
+  --border-color: #e5e7eb;
+  --border-color-light: #f3f4f6;
+}
+
+/* Dark Mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #111827;
+    --bg-secondary: #1f2937;
+    --bg-tertiary: #374151;
+    --text-primary: #f9fafb;
+    --text-secondary: #d1d5db;
+    --text-tertiary: #9ca3af;
+    --border-color: #374151;
+    --border-color-light: #1f2937;
+  }
+}
+
+/* Allow manual dark mode toggle */
+body.dark-mode {
+  --bg-primary: #111827;
+  --bg-secondary: #1f2937;
+  --bg-tertiary: #374151;
+  --text-primary: #f9fafb;
+  --text-secondary: #d1d5db;
+  --text-tertiary: #9ca3af;
+  --border-color: #374151;
+  --border-color-light: #1f2937;
+}
+
+body.light-mode {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f9fafb;
+  --bg-tertiary: #f3f4f6;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-tertiary: #9ca3af;
+  --border-color: #e5e7eb;
+  --border-color-light: #f3f4f6;
 }
 
 /* Animations */
@@ -94,9 +141,10 @@ body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 14px;
   line-height: 1.5;
-  color: var(--gray-800);
-  background: var(--gray-50);
+  color: var(--text-primary);
+  background: var(--bg-primary);
   -webkit-font-smoothing: antialiased;
+  transition: background-color var(--transition-normal), color var(--transition-normal);
 }
 
 .container {
@@ -105,8 +153,9 @@ body {
   max-height: 600px;
   display: flex;
   flex-direction: column;
-  background: white;
+  background: var(--bg-primary);
   overflow: hidden;
+  transition: background-color var(--transition-normal);
 }
 
 /* ============================================
@@ -843,18 +892,20 @@ body {
 .setting-label {
   font-weight: 600;
   font-size: 13px;
-  color: var(--gray-700);
+  color: var(--text-primary);
+  opacity: 0.8;
 }
 
 .setting-input,
 .setting-select {
   padding: var(--space-3);
-  border: 1px solid var(--gray-300);
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   font-size: 14px;
   font-family: inherit;
   transition: all var(--transition-fast);
-  background: white;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
 }
 
 .setting-input:focus,
@@ -866,7 +917,7 @@ body {
 
 .setting-hint {
   font-size: 11px;
-  color: var(--gray-500);
+  color: var(--text-tertiary);
   display: flex;
   align-items: center;
   gap: var(--space-1);
@@ -879,6 +930,83 @@ body {
   border: 1px solid var(--gray-300);
   border-radius: var(--radius-md);
   cursor: pointer;
+}
+
+.setting-toggle {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-primary);
+  transition: all var(--transition-fast);
+  flex: 1;
+  justify-content: flex-start;
+}
+
+.theme-toggle:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--primary-500);
+}
+
+.theme-toggle.active {
+  background: var(--primary-100);
+  border-color: var(--primary-500);
+  color: var(--primary-700);
+}
+
+body.dark-mode .theme-toggle.active {
+  background: rgba(79, 70, 229, 0.2);
+  border-color: var(--primary-500);
+}
+
+.toggle-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.toggle-icon svg {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  opacity: 0;
+  transition: opacity var(--transition-normal);
+}
+
+.sun-icon {
+  opacity: 1;
+}
+
+body.dark-mode .sun-icon {
+  opacity: 0;
+}
+
+body.dark-mode .moon-icon {
+  opacity: 1;
+}
+
+.toggle-text {
+  flex: 1;
+  text-align: left;
 }
 
 .save-btn {
