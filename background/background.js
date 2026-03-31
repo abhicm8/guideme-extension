@@ -354,6 +354,11 @@ IMPORTANT:
   async generateGuide(payload) {
     const { task, url, title, dom, apiProvider, apiKey } = payload;
 
+    // CRITICAL: Validate API key before making requests
+    if (!apiKey || apiKey.trim() === '') {
+      throw new Error('No API key configured. Please set your API key in the extension settings.');
+    }
+
     // Build prompt
     const systemPrompt = this.buildSystemPrompt();
     const userPrompt = this.buildUserPrompt(task, url, title, dom);
@@ -520,33 +525,57 @@ ALWAYS provide at least 1 actionable step - never return empty steps.`;
   }
 
   async callOpenAI(apiKey, systemPrompt, userPrompt) {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        temperature: 0.2,  // Low but not zero for better reasoning
-        max_tokens: 1500,
-        response_format: { type: "json_object" }  // Force JSON output
-      })
-    });
+    // Add timeout (30 seconds) to prevent infinite loading
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.2,  // Low but not zero for better reasoning
+          max_tokens: 1500,
+          response_format: { type: "json_object" }  // Force JSON output
+        })
+      });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || 'OpenAI API error');
+      if (!response.ok) {
+        const error = await response.json();
+        
+        // Better error messages for common issues
+        if (response.status === 401) {
+          throw new Error('Invalid API key. Please check your OpenAI API key in settings.');
+        } else if (response.status === 429) {
+          throw new Error('API rate limited. Please wait a moment and try again.');
+        } else if (response.status === 500 || response.status === 503) {
+          throw new Error('OpenAI service is temporarily unavailable. Please try again in a moment.');
+        }
+        
+        throw new Error(error.error?.message || `OpenAI API error (${response.status})`);
+      }
+
+      const data = await response.json();
+      const content = data.choices[0]?.message?.content;
+
+      return this.parseAIResponse(content);
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new Error('Request timed out (30s). The API is not responding. Please try again.');
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const data = await response.json();
-    const content = data.choices[0]?.message?.content;
-
-    return this.parseAIResponse(content);
   }
 
   async callGemini(apiKey, systemPrompt, userPrompt) {
@@ -560,11 +589,16 @@ ALWAYS provide at least 1 actionable step - never return empty steps.`;
     
     for (const model of models) {
       try {
+        // Add timeout (30 seconds) to prevent infinite loading
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        
         const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
+          signal: controller.signal,
           body: JSON.stringify({
             contents: [
               {
@@ -584,21 +618,27 @@ ALWAYS provide at least 1 actionable step - never return empty steps.`;
         if (!response.ok) {
           const error = await response.json();
           const errorMsg = error.error?.message || 'Unknown error';
+          clearTimeout(timeoutId);
           
-          // If model not found or quota exceeded, try next model
-          if (errorMsg.includes('not found') || 
-              errorMsg.includes('quota') || 
-              errorMsg.includes('exceeded') ||
-              error.error?.code === 404 ||
-              error.error?.code === 429) {
+          // Better error messages for common issues
+          if (response.status === 401 || errorMsg.includes('API key')) {
+            throw new Error('Invalid API key. Please check your Gemini API key in settings.');
+          } else if (response.status === 429 || errorMsg.includes('quota') || errorMsg.includes('exceeded')) {
+            lastError = `Rate limited: ${errorMsg}`;
+            console.log(`GuideMe: Model ${model} rate limited, trying next...`);
+            continue;
+          } else if (response.status === 404 || errorMsg.includes('not found')) {
             lastError = errorMsg;
             console.log(`GuideMe: Model ${model} unavailable, trying next...`);
             continue;
+          } else if (response.status === 500 || response.status === 503) {
+            throw new Error('Gemini API service is temporarily unavailable. Please try again in a moment.');
           }
           throw new Error(errorMsg);
         }
 
         const data = await response.json();
+        clearTimeout(timeoutId);
         
         // Check for blocked content
         if (data.candidates?.[0]?.finishReason === 'SAFETY') {
@@ -615,9 +655,16 @@ ALWAYS provide at least 1 actionable step - never return empty steps.`;
         return this.parseAIResponse(content);
         
       } catch (error) {
+        // Handle timeout
+        if (error.name === 'AbortError') {
+          console.log(`GuideMe: Model ${model} request timed out, trying next...`);
+          lastError = 'Request timeout';
+          continue;
+        }
+        
         lastError = error.message;
         // If quota/rate limit error, try next model
-        if (error.message?.includes('quota') || error.message?.includes('exceeded')) {
+        if (error.message?.includes('quota') || error.message?.includes('exceeded') || error.message?.includes('rate limited')) {
           console.log(`GuideMe: Quota issue with ${model}, trying next...`);
           continue;
         }
@@ -634,33 +681,57 @@ ALWAYS provide at least 1 actionable step - never return empty steps.`;
   }
 
   async callAnthropic(apiKey, systemPrompt, userPrompt) {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 1000,
-        system: systemPrompt,
-        messages: [
-          { role: 'user', content: userPrompt }
-        ]
-      })
-    });
+    // Add timeout (30 seconds) to prevent infinite loading
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: 'claude-3-5-sonnet-20241022',
+          max_tokens: 1000,
+          system: systemPrompt,
+          messages: [
+            { role: 'user', content: userPrompt }
+          ]
+        })
+      });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || 'Anthropic API error');
+      if (!response.ok) {
+        const error = await response.json();
+        
+        // Better error messages for common issues
+        if (response.status === 401) {
+          throw new Error('Invalid API key. Please check your Anthropic API key in settings.');
+        } else if (response.status === 429) {
+          throw new Error('API rate limited. Please wait a moment and try again.');
+        } else if (response.status === 500 || response.status === 503) {
+          throw new Error('Anthropic service is temporarily unavailable. Please try again in a moment.');
+        }
+        
+        throw new Error(error.error?.message || `Anthropic API error (${response.status})`);
+      }
+
+      const data = await response.json();
+      const content = data.content[0]?.text;
+
+      return this.parseAIResponse(content);
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new Error('Request timed out (30s). The API is not responding. Please try again.');
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const data = await response.json();
-    const content = data.content[0]?.text;
-
-    return this.parseAIResponse(content);
   }
 
   parseAIResponse(content) {
