@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>GuideMe dynamic regression fixture</title>
+<style>
+  body { font-family: sans-serif; margin: 30px; }
+  button, input, select { margin: 8px; padding: 10px; }
+  #nested { height: 180px; width: 400px; overflow: auto; border: 2px solid; }
+  #spacer { height: 600px; }
+  #blocker { position: fixed; inset: 0; z-index: 1000; background: white; }
+</style></head>
+<body>
+<main>
+  <h1>Campaigns</h1>
+  <button id="toggle" aria-expanded="false">Campaign options</button>
+  <button id="noop">Save campaign</button>
+  <button id="next">Next control</button>
+  <button id="spa">Open SPA settings</button>
+  <a id="navigate" href="/next-page">Open next page</a>
+  <button id="compose-mail">Compose</button>
+  <section id="compose-surface" role="dialog" aria-label="New Message" hidden style="position:fixed;right:20px;top:30px;background:white;border:1px solid #aaa;padding:20px;z-index:20;width:330px"><h2>New Message</h2><input id="mail-to" type="email" aria-label="To" required><input id="mail-subject" aria-label="Subject"><div id="mail-body" contenteditable="true" role="textbox" aria-label="Message Body" style="min-height:100px;border:1px solid #aaa;padding:10px"></div><button id="mail-send">Send</button></section>
+  <button id="open-dialog">Create campaign</button>
+  <span id="field-label">Campaign name</span><input id="labelled" aria-labelledby="field-label" value="PRIVATE_TEXT">
+  <input type="password" aria-label="Password" value="PRIVATE_PASSWORD">
+  <input type="hidden" value="PRIVATE_TOKEN">
+  <section><div contenteditable="true" aria-label="Notes">PRIVATE_NOTES</div><textarea aria-label="Description">PRIVATE_DESCRIPTION</textarea></section>
+  <button id="disabled" disabled>Unavailable action</button>
+  <input id="checkbox" type="checkbox" aria-label="Enable campaign">
+  <button style="display:none">Hidden action</button>
+  <table><tbody>
+    <tr><td>Diwali campaign</td><td><button id="edit-one">Edit</button></td></tr>
+    <tr><td>October leads</td><td><button id="edit-two">Edit</button></td></tr>
+  </tbody></table>
+  <div id="nested"><div id="spacer"></div><button id="deep">Deep control</button></div>
+  <div id="shadow-host"></div>
+</main>
+<script>
+  window.__composeOpens = 0; window.__mailSends = 0;
+  document.getElementById('compose-mail').onclick = () => { __composeOpens++; document.getElementById('compose-surface').hidden = false; document.getElementById('mail-to').focus(); };
+  document.getElementById('mail-send').onclick = () => { __mailSends++; document.getElementById('compose-surface').hidden = true; const status = document.createElement('div'); status.id = 'mail-status'; status.setAttribute('role', 'status'); status.textContent = 'Message sent'; document.body.append(status); };
+  document.getElementById('toggle').onclick = event => setTimeout(() => event.target.setAttribute('aria-expanded', 'true'), 250);
+  document.getElementById('spa').onclick = () => history.pushState({}, '', '/settings');
+  document.getElementById('open-dialog').onclick = () => {
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('aria-label', 'Create campaign');
+    dialog.innerHTML = '<p>Campaign form</p><button>Cancel</button>';
+    document.body.append(dialog);
+    dialog.showModal();
+  };
+  const shadow = document.getElementById('shadow-host').attachShadow({ mode: 'open' });
+  shadow.innerHTML = '<button aria-label="Shadow control" style="padding:10px">Open</button>';
+</script>
+</body></html>

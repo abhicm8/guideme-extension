@@ -6,9 +6,9 @@ class GuideMePopup {
     this.currentTask = '';
     this.currentUrl = '';
     this.settings = {
-      apiProvider: 'gemini',  // Default to free Gemini
+      apiProvider: 'gemini',
       apiKey: '',
-      highlightColor: '#4F46E5'
+      highlightColor: '#44786a'
     };
 
     // Voice recognition
@@ -25,56 +25,105 @@ class GuideMePopup {
   }
 
   async init() {
-    await this.loadSettings();
     this.bindElements();
+    this.panelUI = new GuideMePanelUI();
+    this.currentView = 'main';
+    this.providerSettings = new GuideMeProviderSettings((message, type) => this.showStatus(message, type));
+    await this.loadSettings();
     this.bindEvents();
-    this.updateSiteName();
     this.setupVoiceRecognition();
-    
-    // Restore guide state from content script if a guide is running
+    const draft = await chrome.storage.local.get(['guidemeTaskDraft']);
+    this.taskInput.value = draft.guidemeTaskDraft || '';
     await this.restoreGuideStateFromContentScript();
+    this.guideSyncTimer = setInterval(() => this.restoreGuideStateFromContentScript(), 750);
+    chrome.tabs.onActivated?.addListener(() => { this.panelRefreshVersion = (this.panelRefreshVersion || 0) + 1; this.restoreGuideStateFromContentScript(); });
+    chrome.tabs.onUpdated?.addListener((id, change) => { if (id === this.activeTabId && change.status === 'complete') this.restoreGuideStateFromContentScript(); });
+    window.addEventListener('pagehide', () => {
+      clearInterval(this.guideSyncTimer);
+      this.stopRecordingPoll();
+      // Closing this view never stops the guide or its background request.
+    });
+    document.addEventListener('visibilitychange', () => {
+      this.isPanelHidden = document.hidden;
+      if (document.hidden && this.activeTabId) chrome.tabs.sendMessage(this.activeTabId, { type: 'SET_PANEL_VISIBILITY', visible: false }).catch(() => {});
+      if (!document.hidden) this.restoreGuideStateFromContentScript();
+    });
   }
-  
+
   async restoreGuideStateFromContentScript() {
+    if (this.isSyncingGuide || this.isPanelHidden || this.isStoppingGuide) return;
+    this.isSyncingGuide = true;
+    const version = this.panelRefreshVersion || 0;
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id || tab.url?.startsWith('chrome://') || tab.url?.startsWith('chrome-extension://')) {
-        return;
+      if (!tab?.id) return;
+      const changedTab = this.activeTabId && this.activeTabId !== tab.id;
+      this.activeTabId = tab.id;
+      if (this.siteName) this.siteName.textContent = /^https?:/.test(tab.url || '') ? new URL(tab.url).hostname : 'Open a website to begin';
+      if (changedTab) {
+        this.currentSteps = [];
+        this.currentStepIndex = 0;
+        this.currentTask = '';
+        this.dismissedSummaryAt = null;
+        if (['main', 'guide'].includes(this.currentView)) this.showView('main');
       }
-      
-      const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_CURRENT_GUIDE_DATA' });
-      
-      if (response && response.steps && response.steps.length > 0) {
-        console.log('Restoring guide state from content script');
-        console.log('- savedGuideId:', response.savedGuideId);
-        console.log('- steps (current page):', response.steps.length);
-        console.log('- allOriginalSteps:', response.allOriginalSteps?.length);
-        console.log('- currentStepIndex:', response.currentStepIndex);
-        console.log('- originalStepIndex:', response.originalStepIndex);
-        
-        // For saved guides, use allOriginalSteps (full guide) to ensure we can edit properly
-        // Calculate the actual index into the full guide
-        if (response.isSavedGuideReplay && response.allOriginalSteps) {
-          this.currentSteps = response.allOriginalSteps;
-          // The actual step in the full guide = originalStepIndex + currentStepIndex
-          this.currentStepIndex = (response.originalStepIndex || 0) + (response.currentStepIndex || 0);
-          console.log('- Calculated full guide index:', this.currentStepIndex);
-        } else {
-          this.currentSteps = response.steps;
-          this.currentStepIndex = response.currentStepIndex || 0;
-        }
-        
+      const [response, stored] = await Promise.all([
+        chrome.tabs.sendMessage(tab.id, { type: 'GET_CURRENT_GUIDE_DATA' }).catch(() => null),
+        chrome.runtime.sendMessage({ type: 'GET_PANEL_ACTIVITY', tabId: tab.id }).catch(() => ({ phase: 'idle' }))
+      ]);
+      if (version !== (this.panelRefreshVersion || 0)) return;
+      chrome.tabs.sendMessage(tab.id, { type: 'SET_PANEL_VISIBILITY', visible: true }).catch(() => {});
+      const pending = stored?.owner === 'background' && ['reading', 'planning'].includes(stored.phase);
+      let activity = pending ? stored : response?.activity || stored || { phase: 'idle' };
+      if (pending && Date.now() - stored.updatedAt > 90000) activity = { phase: 'error', detail: 'This request was interrupted. Start again when you are ready.' };
+      if (['complete', 'handoff', 'blocked'].includes(activity.phase) && this.dismissedSummaryAt === response?.lastGuideSummary?.finishedAt) activity = { phase: 'idle' };
+      this.panelUI?.render(activity, response || {});
+      const busy = ['reading', 'planning', 'locating', 'verifying'].includes(activity.phase);
+      if (this.guideBtn) this.guideBtn.disabled = busy;
+      this.isFinalStepBatch = response?.isFinalStepBatch || false;
+      this.panelCompletedCount = response?.completedSteps?.length || 0;
+      if (['error', 'attention'].includes(activity.phase) && activity.detail) this.showStatus(activity.detail, activity.phase === 'error' ? 'error' : 'info');
+      else if (this.statusMessage?.dataset.source === 'activity') this.hideStatus();
+      if (this.statusMessage && ['error', 'attention'].includes(activity.phase)) this.statusMessage.dataset.source = 'activity';
+      if (response?.isGuideActive && response.steps?.length) {
+        this.currentSteps = response.isSavedGuideReplay && response.allOriginalSteps ? response.allOriginalSteps : response.steps;
+        this.currentStepIndex = response.isSavedGuideReplay ? response.originalStepIndex || 0 : response.currentStepIndex || 0;
         this.currentTask = response.task || '';
         this.currentUrl = response.url || '';
         this.currentPlayingGuideId = response.savedGuideId || null;
-        
-        // Show guide view if a guide is active
-        this.showView('guide');
-        this.renderCurrentStep();
+        this.nextStepBtn.disabled = busy;
+        if (!this.currentView || ['main', 'guide'].includes(this.currentView)) {
+          this.showView('guide');
+          this.renderCurrentStep();
+        }
+      } else if (!pending && response?.isGuideActive === false && !['reading', 'planning'].includes(activity.phase)) {
+        if (this.currentView === 'guide' || !this.currentView) this.showView('main');
+        this.currentSteps = [];
       }
-    } catch (e) {
-      // No guide running or content script not injected, that's fine
-      console.log('No active guide to restore:', e.message);
+      const complete = ['complete', 'handoff', 'blocked'].includes(activity.phase) && !!response?.lastGuideSummary && this.currentView === 'main';
+      document.getElementById('completionCard')?.classList.toggle('hidden', !complete);
+      if (this.currentView === 'main') this.mainView.classList.toggle('hidden', complete);
+      document.querySelector('.welcome')?.classList.toggle('hidden', complete);
+      if (this.currentView === 'main' && this.recordingPanel?.classList.contains('hidden')) document.querySelector('.input-section')?.classList.toggle('hidden', complete);
+    } catch (error) {
+      console.debug('GuideMe: Waiting for the current page', error.message);
+    } finally {
+      this.isSyncingGuide = false;
+    }
+  }
+
+  async hidePanel() {
+    this.isPanelHidden = true;
+    this.stopVoice();
+    clearTimeout(this.draftTimer);
+    await chrome.storage.local.set({ guidemeTaskDraft: this.taskInput.value });
+    if (this.activeTabId) await chrome.tabs.sendMessage(this.activeTabId, { type: 'SET_PANEL_VISIBILITY', visible: false }).catch(() => {});
+    try {
+      const current = await chrome.windows.getCurrent();
+      await chrome.sidePanel.close({ windowId: current.id });
+    } catch (error) {
+      this.isPanelHidden = false;
+      this.showStatus('Use the browser’s panel close button. Your guide will stay active.', 'info');
     }
   }
 
@@ -168,6 +217,37 @@ class GuideMePopup {
   }
 
   bindEvents() {
+    document.querySelectorAll('input[name="appearanceTheme"]').forEach(input => {
+      input.addEventListener('change', async () => {
+        if (!input.checked) return;
+        try { await GuideMeTheme.set(input.value); }
+        catch { this.showStatus('Could not save your appearance. Please try again.', 'error'); }
+      });
+    });
+    document.getElementById('hidePanelBtn').addEventListener('click', () => this.hidePanel());
+    const openWorkspace = () => this.showView(this.currentSteps.length ? 'guide' : 'main');
+    document.getElementById('homeBtn').addEventListener('click', openWorkspace);
+    document.getElementById('workspaceBtn').addEventListener('click', openWorkspace);
+    document.getElementById('retryGuideBtn').addEventListener('click', async () => {
+      if (this.activeTabId) await chrome.tabs.sendMessage(this.activeTabId, { type: 'REFRESH_GUIDE' });
+      this.restoreGuideStateFromContentScript();
+    });
+    document.getElementById('newGuideBtn').addEventListener('click', async () => {
+      const data = await chrome.tabs.sendMessage(this.activeTabId, { type: 'GET_CURRENT_GUIDE_DATA' });
+      this.dismissedSummaryAt = data.lastGuideSummary?.finishedAt;
+      await chrome.tabs.sendMessage(this.activeTabId, { type: 'DISMISS_GUIDE_OUTCOME' });
+      this.showView('main');
+      this.taskInput.value = '';
+      this.persistDraft();
+      await this.restoreGuideStateFromContentScript();
+      this.taskInput.focus();
+    });
+    document.getElementById('resumeGuideBtn').addEventListener('click', async () => {
+      if (!this.activeTabId) return;
+      await chrome.tabs.sendMessage(this.activeTabId, { type: 'REFRESH_GUIDE', preferSteps: true });
+      await this.restoreGuideStateFromContentScript();
+    });
+    this.taskInput.addEventListener('input', () => this.persistDraft());
     // Navigation
     this.settingsBtn.addEventListener('click', () => this.showView('settings'));
     this.savedGuidesBtn.addEventListener('click', () => this.showView('savedGuides'));
@@ -228,7 +308,8 @@ class GuideMePopup {
     this.quickBtns.forEach(btn => {
       btn.addEventListener('click', () => {
         this.taskInput.value = btn.dataset.task;
-        this.startGuide();
+        this.persistDraft();
+        this.taskInput.focus();
       });
     });
 
@@ -449,7 +530,7 @@ class GuideMePopup {
   stopVoiceUI() {
     this.voiceBtn.classList.remove('listening');
     this.voiceStatus.classList.add('hidden');
-    this.taskInput.placeholder = 'e.g., How do I create a new project?\ne.g., Where can I change my password?\ne.g., Help me export this as PDF';
+    this.taskInput.placeholder = 'Find a setting, create something,\nor learn your way around…';
   }
 
   // ============ SAVED GUIDES (MACROS) ============
@@ -632,7 +713,7 @@ class GuideMePopup {
   async saveMacro() {
     const name = this.macroNameInput.value.trim();
     if (!name) {
-      this.macroNameInput.style.borderColor = '#dc2626';
+      this.macroNameInput.style.borderColor = 'var(--error-500)';
       return;
     }
 
@@ -699,7 +780,7 @@ class GuideMePopup {
 
     const newName = this.renameGuideInput.value.trim();
     if (!newName) {
-      this.renameGuideInput.style.borderColor = '#dc2626';
+      this.renameGuideInput.style.borderColor = 'var(--error-500)';
       return;
     }
 
@@ -875,6 +956,7 @@ class GuideMePopup {
       }
       
       this.currentTask = guide.task;
+      this.isFinalStepBatch = true;
       this.currentSteps = guide.steps;
       this.currentStepIndex = 0;
       this.currentUrl = tab.url;
@@ -884,7 +966,7 @@ class GuideMePopup {
       try {
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          files: ['content/content.js']
+          files: ['content/page-intelligence.js', 'content/step-verifier.js', 'content/content.js']
         });
       } catch (e) {
         // Script might already be loaded, which is fine
@@ -901,6 +983,7 @@ class GuideMePopup {
           steps: this.currentSteps,
           highlightColor: this.settings.highlightColor,
           task: guide.task,
+          presentationMode: 'sidepanel',
           isMacro: true,
           isRecorded: guide.isRecorded || false,
           guideId: guide.id // Pass guide ID for edit persistence
@@ -919,7 +1002,8 @@ class GuideMePopup {
 
   updateProviderHint() {
     const hints = {
-      gemini: 'Get free API key at aistudio.google.com',
+      gemini: 'Use your Google AI Studio API key.',
+      vertex: 'Use a Google Cloud service-account JSON key.',
       openai: 'Get key at platform.openai.com (paid)',
       anthropic: 'Get key at console.anthropic.com (paid)'
     };
@@ -928,11 +1012,12 @@ class GuideMePopup {
 
   async loadSettings() {
     try {
-      const result = await chrome.storage.local.get(['apiProvider', 'apiKey', 'highlightColor', 'autoSaveGuides']);
+      const result = await chrome.storage.local.get([...GuideMeAIConfig.keys, 'highlightColor', 'autoSaveGuides']);
       if (result.apiProvider) this.settings.apiProvider = result.apiProvider;
       if (result.apiKey) this.settings.apiKey = result.apiKey;
       if (result.highlightColor) this.settings.highlightColor = result.highlightColor;
       
+      this.providerSettings.load(result);
       // Auto-save defaults to true
       this.settings.autoSaveGuides = result.autoSaveGuides !== false;
 
@@ -963,16 +1048,16 @@ class GuideMePopup {
   }
 
   async saveSettings() {
-    this.settings.apiProvider = this.apiProvider.value;
-    this.settings.apiKey = this.apiKey.value;
-    this.settings.highlightColor = this.highlightColor.value;
-
     try {
-      await chrome.storage.local.set(this.settings);
+      const provider = this.providerSettings.collect();
+      const settings = { apiProvider: this.apiProvider.value, apiKey: this.apiKey.value.trim(), highlightColor: this.highlightColor.value, ...provider };
+      await chrome.storage.local.set(settings);
+      this.settings = { ...this.settings, apiProvider: settings.apiProvider, apiKey: settings.apiKey, highlightColor: settings.highlightColor };
+      this.providerSettings.saved(settings);
       this.showStatus('Settings saved successfully!', 'success');
       setTimeout(() => this.showView('main'), 1000);
     } catch (error) {
-      this.showStatus('Failed to save settings', 'error');
+      this.showStatus(error.message || 'Failed to save settings', 'error');
     }
   }
 
@@ -991,6 +1076,14 @@ class GuideMePopup {
   }
 
   showView(view) {
+    this.currentView = view;
+    const selected = view === 'savedGuides' ? 'savedGuidesBtn' : view === 'settings' ? 'settingsBtn' : 'workspaceBtn';
+    document.querySelectorAll('.workspace-tab').forEach(button => {
+      button.classList.toggle('active', button.id === selected);
+      if (button.id === selected) button.setAttribute('aria-current', 'page');
+      else button.removeAttribute('aria-current');
+    });
+    document.getElementById('completionCard')?.classList.add('hidden');
     this.mainView.classList.add('hidden');
     this.settingsView.classList.add('hidden');
     this.guideView.classList.add('hidden');
@@ -1007,6 +1100,7 @@ class GuideMePopup {
         this.apiKey.value = this.settings.apiKey;
         this.highlightColor.value = this.settings.highlightColor;
         this.updateProviderHint();
+        this.providerSettings.update(true);
         break;
       case 'guide':
         this.guideView.classList.remove('hidden');
@@ -1019,6 +1113,7 @@ class GuideMePopup {
   }
 
   showStatus(message, type = 'loading') {
+    delete this.statusMessage.dataset.source;
     this.statusMessage.textContent = message;
     this.statusMessage.className = `status-message ${type}`;
     this.statusMessage.classList.remove('hidden');
@@ -1028,102 +1123,37 @@ class GuideMePopup {
     this.statusMessage.classList.add('hidden');
   }
 
+  persistDraft() {
+    clearTimeout(this.draftTimer);
+    const value = this.taskInput.value;
+    this.draftTimer = setTimeout(() => chrome.storage.local.set({ guidemeTaskDraft: value }), 150);
+  }
+
   async startGuide() {
     const task = this.taskInput.value.trim();
-    if (!task) {
-      this.showStatus('Please describe what you want to do', 'error');
-      return;
-    }
-
-    if (!this.settings.apiKey) {
-      this.showStatus('Please add your API key in settings', 'error');
-      return;
-    }
-
+    if (!task) { this.taskInput.focus(); this.showStatus('Tell us what you would like to do on this page.', 'info'); return; }
+    const configured = this.settings.apiProvider === 'vertex' ? Boolean(this.providerSettings.credentials) : Boolean(this.settings.apiKey);
+    if (!configured) { this.showView('settings'); this.showStatus('Add your provider credentials, then come back to your request.', 'info'); return; }
+    if (this.guideBtn.disabled) return;
+    this.hideStatus();
+    this.showView('main');
+    this.currentPlayingGuideId = null;
+    this.dismissedSummaryAt = null;
     this.guideBtn.disabled = true;
-    this.guideBtn.innerHTML = '<span class="icon btn-icon"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg></span> Analyzing...';
-    this.showStatus('Reading page and generating guide...', 'loading');
-
+    this.panelUI?.render({ phase: 'reading', task });
+    this.persistDraft();
+    const targetTabId = this.activeTabId;
+    const requestVersion = this.guideRequestVersion = (this.guideRequestVersion || 0) + 1;
     try {
-      // Get current tab
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      
-      // Store for macro saving
-      this.currentTask = task;
-      this.currentUrl = tab.url;
-      
-      // Request DOM from content script
-      const domData = await this.getDOMFromPage(tab.id);
-      
-      // Send to AI via background script
-      const response = await chrome.runtime.sendMessage({
-        type: 'GENERATE_GUIDE',
-        payload: {
-          task: task,
-          url: tab.url,
-          title: tab.title,
-          dom: domData,
-          apiProvider: this.settings.apiProvider,
-          apiKey: this.settings.apiKey
-        }
-      });
-
-      if (response.error) {
-        throw new Error(response.error);
-      }
-
-      this.currentSteps = response.steps;
-      this.currentStepIndex = 0;
-
-      // Check if AI returned empty steps (shouldn't happen after backend fix, but be safe)
-      if (!this.currentSteps || this.currentSteps.length === 0) {
-        // Check if AI marked task as already complete
-        if (response.completed) {
-          this.showStatus('The AI thinks this task is already complete on this page. Try asking differently.', 'error');
-        } else {
-          this.showStatus('Could not generate guide. Try being more specific about what you want to do.', 'error');
-        }
-        return;
-      }
-
-      // Send steps to content script for highlighting (include task for cross-page tracking)
-      // IMPORTANT: Pass isFinalStepBatch so content script knows if this completes on one page
-      
-      // Detect simple single-page tasks that don't need continuation
-      const taskLower = task.toLowerCase();
-      const isSimpleSinglePageTask = (
-        taskLower.includes('clone') || taskLower.includes('copy url') ||
-        taskLower.includes('download') || taskLower.includes('find') ||
-        taskLower.includes('show') || taskLower.includes('where is') ||
-        taskLower.includes('locate') || taskLower.includes('what is')
-      ) && !taskLower.includes('fork') && !taskLower.includes('pull request');
-      
-      // Mark as final batch if AI says so OR if it's a simple task with few steps
-      const isFinalBatch = response.completed === true || 
-                           (isSimpleSinglePageTask && this.currentSteps.length <= 3);
-      
-      console.log('GuideMe: Task analysis - simple:', isSimpleSinglePageTask, 'steps:', this.currentSteps.length, 'isFinalBatch:', isFinalBatch);
-      
-      await chrome.tabs.sendMessage(tab.id, {
-        type: 'START_GUIDE',
-        payload: {
-          steps: this.currentSteps,
-          highlightColor: this.settings.highlightColor,
-          task: task,
-          isFinalStepBatch: isFinalBatch // Tell content script if this is single-page
-        }
-      });
-
-      this.hideStatus();
-      this.showView('guide');
-      this.renderCurrentStep();
-
+      const response = await chrome.runtime.sendMessage({ type: 'START_GUIDE_TASK', payload: { task, tabId: targetTabId, highlightColor: this.settings.highlightColor } });
+      if (requestVersion !== this.guideRequestVersion || (targetTabId && targetTabId !== this.activeTabId)) return;
+      if (response?.error) throw new Error(response.error);
+      await this.restoreGuideStateFromContentScript();
     } catch (error) {
-      console.error('Guide generation failed:', error);
-      this.showStatus(`Error: ${error.message}`, 'error');
-    } finally {
+      if (requestVersion !== this.guideRequestVersion) return;
       this.guideBtn.disabled = false;
-      this.guideBtn.innerHTML = '<span class="icon btn-icon"><svg viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg></span> Guide Me';
+      this.panelUI?.render({ phase: 'error', detail: error.message });
+      this.showStatus(error.message, 'error');
     }
   }
 
@@ -1135,7 +1165,7 @@ class GuideMePopup {
       // Content script might not be loaded, inject it first
       await chrome.scripting.executeScript({
         target: { tabId: tabId },
-        files: ['content/content.js']
+        files: ['content/page-intelligence.js', 'content/step-verifier.js', 'content/content.js']
       });
       await chrome.scripting.insertCSS({
         target: { tabId: tabId },
@@ -1151,38 +1181,36 @@ class GuideMePopup {
     if (this.currentSteps.length === 0) return;
 
     const step = this.currentSteps[this.currentStepIndex];
-    const stepNum = this.currentStepIndex + 1;
+    const stepNum = this.currentPlayingGuideId ? this.currentStepIndex + 1 : (this.panelCompletedCount || 0) + 1;
     const totalSteps = this.currentSteps.length;
 
     // Use description or instruction (handle both field names)
-    const stepText = step.description || step.instruction || 'Follow this step';
-    const actionText = step.action ? `<p class="step-hint">Action: ${step.action}</p>` : '';
-    const hintText = step.hint ? `<p class="step-hint">${step.hint}</p>` : '';
+    const stepText = this.escapeHtml(step.description || step.instruction || 'Follow this step');
+    const hintText = step.hint && !['type', 'select'].includes(step.action) ? `<p class="step-hint">${this.escapeHtml(step.hint)}</p>` : '';
 
     this.currentStep.innerHTML = `
-      <span class="step-number">Step ${stepNum} of ${totalSteps}</span>
+      <span class="step-number">Step ${stepNum}${this.currentPlayingGuideId ? ` of ${totalSteps}` : ''}</span>
       <p class="step-instruction">${stepText}</p>
-      ${actionText}
       ${hintText}
     `;
 
     // Show step edit controls for saved guides
     if (this.stepEditControls) {
-      this.stepEditControls.classList.remove('hidden');
+      this.stepEditControls.classList.toggle('hidden', !this.currentPlayingGuideId);
     }
 
     // Update navigation buttons
     this.prevStepBtn.disabled = this.currentStepIndex === 0;
-    this.nextStepBtn.innerHTML = this.currentStepIndex === totalSteps - 1 
+    this.nextStepBtn.innerHTML = this.currentStepIndex === totalSteps - 1 && (this.isFinalStepBatch || this.currentPlayingGuideId)
       ? 'Done <span class="icon icon-sm"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></span>' 
       : 'Next <span class="icon icon-sm"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>';
 
     // Update progress bar
-    const progress = ((stepNum) / totalSteps) * 100;
+    const progress = this.currentPlayingGuideId ? ((this.currentStepIndex + 1) / totalSteps) * 100 : 0;
     this.progressBar.style.width = `${progress}%`;
+    this.progressBar.parentElement?.classList.toggle('indeterminate', !this.currentPlayingGuideId && !this.isFinalStepBatch);
 
-    // Highlight current element
-    this.highlightCurrentStep();
+    // Highlighting is owned by the content controller; rendering must not reset it.
   }
   
   // ============ STEP EDITING ============
@@ -1204,7 +1232,7 @@ class GuideMePopup {
   async confirmEditStep() {
     const newDescription = this.editStepInput.value.trim();
     if (!newDescription) {
-      this.editStepInput.style.borderColor = '#dc2626';
+      this.editStepInput.style.borderColor = 'var(--error-500)';
       return;
     }
     
@@ -1436,38 +1464,44 @@ class GuideMePopup {
   }
 
   async navigateStep(direction) {
-    const newIndex = this.currentStepIndex + direction;
-    
-    if (newIndex < 0) return;
-    
-    if (newIndex >= this.currentSteps.length) {
-      // Guide complete
-      await this.stopGuide();
-      this.showStatus('Guide completed!', 'success');
-      this.showView('main');
-      return;
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await chrome.tabs.sendMessage(tab.id, { type: direction > 0 ? 'ADVANCE_GUIDE' : 'PREVIOUS_GUIDE_STEP' });
+      await this.restoreGuideStateFromContentScript();
+    } catch (error) {
+      this.showStatus(`Could not move to the next step: ${error.message}`, 'error');
     }
-
-    this.currentStepIndex = newIndex;
-    this.renderCurrentStep();
   }
 
   async stopGuide() {
+    this.guideRequestVersion = (this.guideRequestVersion || 0) + 1;
+    this.panelRefreshVersion = (this.panelRefreshVersion || 0) + 1;
+    this.isStoppingGuide = true;
+    this.stopGuideBtn.disabled = true;
+    let failure = false;
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      await chrome.tabs.sendMessage(tab.id, { type: 'STOP_GUIDE' });
-    } catch (error) {
-      console.error('Failed to stop guide:', error);
-    }
-
+      const tabId = this.activeTabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+      if (!tabId) throw new Error('No active guide tab');
+      // Both operations must run, even if the tab disconnected from one context.
+      const results = await Promise.allSettled([
+        chrome.runtime.sendMessage({ type: 'CANCEL_GUIDE_TASK', tabId }),
+        chrome.tabs.sendMessage(tabId, { type: 'STOP_GUIDE' })
+      ]);
+      failure = results[0].status === 'rejected' || (results[1].status === 'rejected' && this.currentSteps.length > 0) ||
+        results.some(result => result.status === 'fulfilled' && result.value?.error);
+    } catch { failure = true; }
+    finally { this.stopGuideBtn.disabled = false; this.isStoppingGuide = false; }
     this.currentSteps = [];
     this.currentStepIndex = 0;
     this.currentTask = '';
     this.currentUrl = '';
+    this.guideBtn.disabled = false;
+    this.panelUI?.render({ phase: failure ? 'error' : 'idle' });
     this.showView('main');
-    this.hideStatus();
+    if (failure) this.showStatus('Could not fully stop the guide. Try Stop again or refresh the page to remove its highlights.', 'error');
+    else this.showStatus('Guide stopped. You can start a new request.', 'success');
   }
-  
+
   // ============ GUIDE RECORDING MODE ============
   
   async checkActiveRecording() {
@@ -1677,7 +1711,7 @@ class GuideMePopup {
     const modalTitle = this.saveMacroModal.querySelector('h3');
     if (modalTitle) {
       modalTitle.innerHTML = `
-        <span class="icon" style="color: #ef4444;">
+        <span class="icon" style="color: var(--error-500);">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="currentColor"/></svg>
         </span> 
         Save Recorded Guide

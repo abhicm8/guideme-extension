@@ -257,6 +257,17 @@ The format is versioned. If you change the schema:
 
 ### Manual Testing Checklist
 
+Run the automated checks first:
+
+```bash
+npm ci
+npm run check
+npm test
+npm run test:browser
+```
+
+The browser suite uses installed Google Chrome on macOS. On other systems, run `npx playwright install chromium`, or set `GUIDEME_CHROME_PATH`. Chrome APIs and model responses are mocked; real-site and provider checks below remain useful. See [Architecture](ARCHITECTURE.md#automated-regression-checks) for coverage and limitations.
+
 Before submitting a PR, test these scenarios:
 
 #### Basic Flow

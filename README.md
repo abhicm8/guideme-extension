@@ -17,6 +17,25 @@ Visit : [https://guideme-web.vercel.app]
 
 ---
 
+## Persistent workspace
+
+GuideMe now opens alongside your webpage in Chrome's native side panel (Chrome 141+). Click the toolbar icon to open it. **Hide** keeps planning and the current guide active; a small page companion lets you reopen the workspace, confirm a step, or stop. The workspace shows processing stages, verified/manual step counts, and recent activity. Settings, the guide library, import/export, and recording remain available.
+
+Choose **Light** or **Dark** under **Settings → Appearance**. The selection saves immediately and stays independent of your system or browser theme.
+
+A labelled **Stop** button stays in the workspace header during planning and guidance, including when you switch to Settings or Library. Hiding the panel keeps the guide running; Stop cancels the pending guide and removes its highlights. The page companion also has a labelled Stop control.
+
+Guided form steps show **What to enter** and an **On this form** checklist. Opening a new focused compose form can now verify the Compose click automatically. For supported type/select steps, edit the highlighted field and press **Tab**, or choose **Next** to confirm manually. Clicking a field alone does not finish it. Field presence/validity are reported as booleans; manually entered recipient, subject and body values are not copied into AI snapshots or checkpoints. Presence does not prove the content is correct. Repeated clicks trigger at most one corrective replan, then end with a useful handoff if highlighting would repeat the action.
+
+For live guidance, a trusted click registers immediately. GuideMe distinguishes **result verified**, **confirmed by you**, and **click recorded; result unverified**. It can move on after observing your click without claiming that the requested change succeeded. Saved replay retains its stricter verification/manual-confirmation behaviour.
+
+Guides now have explicit endings: **handoff** (explain the current state and remaining actions), **complete** (the page reports an outcome with visible evidence), or **blocked** (explain missing context and a useful way forward). The summary replaces stale highlights and persists for the owning tab across panel/page reopening. **Guide me step by step** resumes the same task if you want more help. The model derives summaries from your request and the current page; a generic fallback uses observed field labels, with no site-specific workflow mapping. Empty plans receive at most one summary repair request and do not leave the old step highlighted. An open form alone is never evidence that its business action succeeded.
+
+The agreed design for a future email automation mode is: provide recipient, subject and body → fill a draft → review the exact draft → explicitly approve **Send in GuideMe**. Draft changes must invalidate that approval. This execution mode is not implemented yet; the current mode guides the user's own actions.
+
+
+After updating an unpacked installation, reload the extension at `chrome://extensions` and refresh your webpage so the new panel and content scripts are loaded.
+
 ## ⚡ Quick Start
 
 ```bash
@@ -304,13 +323,14 @@ Managing the api keys
 
 ## ⚙️ Configuration
 
-Click the ⚙️ icon in the extension popup to access settings.
+Open **Settings** in the GuideMe side panel to configure your provider.
 
 ### API Providers
 
 | Provider | Cost | Quality | Get API Key |
 |----------|------|---------|-------------|
 | **Gemini** (default) | 🆓 Free | Good | [aistudio.google.com](https://aistudio.google.com/app/apikey) |
+| **Vertex AI (Gemini)** | Google Cloud billing | Choose a Gemini model | Service-account JSON key |
 | **OpenAI** | 💰 Paid | Excellent | [platform.openai.com](https://platform.openai.com/api-keys) |
 | **Claude** | 💰 Paid | Excellent | [console.anthropic.com](https://console.anthropic.com/) |
 
@@ -320,8 +340,17 @@ Click the ⚙️ icon in the extension popup to access settings.
 |---------|-------------|
 | **API Provider** | Choose your AI provider (Gemini recommended for free usage) |
 | **API Key** | Your provider's API key (stored locally in browser) |
+| **Vertex credentials** | Paste or import a service-account JSON key; set project ID and location |
+| **Gemini model** | Choose a listed model or enter a custom generateContent model ID |
+| **Thinking** | Model default or supported effort levels; legacy 2.5 Flash offers token budgets |
 | **Highlight Color** | Customize the highlight color for better visibility |
 | **Auto-save Guides** | Automatically save completed guides |
+
+For **Vertex AI**, choose **Google Vertex AI · service account**, paste your JSON contents or import the `.json` file, and save. The project defaults to the JSON's `project_id`; change it if billing and access belong to another project. Location defaults to `global`. Enable the Vertex AI API and billing, and grant the service account the Vertex AI User role (`roles/aiplatform.user`) in the target project. Model availability depends on that project and location.
+
+The model menu includes Gemini 3.8 Flash, 3.6 Flash, 3.5 Flash, 3.5 Flash-Lite, 3.1 Pro preview, and legacy 2.5 Flash. Vertex also lists 3.7 Flash. New configurations default to 3.8 Flash with model-default thinking. Thinking choices follow [Google's documented capabilities](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/thinking): 3.8 Flash supports Low/Medium/High; earlier Flash models also support Minimal. On the Gemini API, [the 3.5 Flash endpoint routes to 3.6 Flash](https://ai.google.dev/gemini-api/docs/deprecations/). Custom model IDs use their default thinking configuration. GuideMe never silently switches models after an error.
+
+Saved service-account private keys live **unencrypted in extension-local storage on this device**, like the existing API key. The saved key is not displayed again; use **Remove saved key** to delete it. The worker signs the OAuth assertion locally and sends it only to Google's fixed token endpoint. Short-lived access tokens stay in worker memory. Credentials are excluded from page messages, guide checkpoints and exports. This is intended for users bringing their own credentials, not for shipping a shared service-account key inside the extension.
 
 ## 🏗️ How It Works
 

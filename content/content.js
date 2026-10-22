@@ -35,6 +35,24 @@ class GuideMeContent {
     this.originalTask = '';
     this.lastExtractedElements = {};
     this.lastDomSnapshot = null;
+    this.pageIntelligence = new GuideMeRuntime.PageIntelligence(document);
+    this.stepVerifier = new GuideMeRuntime.StepVerifier(this.pageIntelligence);
+    this.completedStepObjects = new WeakSet();
+    this.highlightController = null;
+    this.actionController = null;
+    this.pendingAction = null;
+    this.requestVersion = 0;
+    this.panelOwned = false;
+    this.panelVisibleUntil = 0;
+    this.panelPhase = 'idle';
+    this.panelMessage = '';
+    this.isPreparingTask = false;
+    this.lastGuideSummary = null;
+    this.lastInteraction = null;
+    this.guidancePreference = 'auto';
+    this.ownerTabId = null;
+    this.appearanceTheme = 'light';
+    this.appearanceRevision = 0;
     
     // AI request tracking - prevents highlighting stale elements while AI is processing
     this.isWaitingForAI = false;
@@ -65,6 +83,7 @@ class GuideMeContent {
   }
 
   init() {
+    this.setupAppearance();
     // Listen for messages from popup/background
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       this.handleMessage(message, sender, sendResponse);
@@ -81,7 +100,7 @@ class GuideMeContent {
     this.setupKeyboardShortcuts();
 
     // Check for saved guide state on page load (for cross-page navigation)
-    this.checkForSavedGuide();
+    this.restoreTabGuide();
     
     // Check for active recording session (cross-page)
     this.checkForActiveRecording();
@@ -93,6 +112,23 @@ class GuideMeContent {
       if (e.key === 'Escape' && this.isGuideActive) {
         console.log('GuideMe: Escape pressed - stopping guide');
         this.stopGuide();
+      }
+    });
+  }
+
+  setupAppearance() {
+    const apply = value => {
+      this.appearanceTheme = value === 'dark' ? 'dark' : 'light';
+      if (this.companionDock) this.companionDock.dataset.guidemeTheme = this.appearanceTheme;
+    };
+    const revision = this.appearanceRevision;
+    chrome.storage.local.get(['appearanceTheme']).then(settings => {
+      if (revision === this.appearanceRevision) apply(settings.appearanceTheme);
+    }).catch(() => {});
+    chrome.storage.onChanged?.addListener((changes, area) => {
+      if (area === 'local' && changes.appearanceTheme) {
+        this.appearanceRevision++;
+        apply(changes.appearanceTheme.newValue);
       }
     });
   }
@@ -112,7 +148,7 @@ class GuideMeContent {
         
         // If tab was hidden for a while (user was in another tab), 
         // and we have a guide active, check if we should stop
-        if (hiddenDuration > 5000 && this.isGuideActive) {
+        if (hiddenDuration > 5000 && this.isGuideActive && !this.panelOwned) {
           // User spent significant time in another tab - likely following guide there
           // IMPORTANT: Only stop LOCAL guide instance, do NOT clear shared storage!
           // The new tab needs the saved state (allStepsForSaving, etc.)
@@ -170,63 +206,51 @@ class GuideMeContent {
       return;
     }
     
-    // CRITICAL: If we're processing a click, don't advance here
-    // BUT if URL changed, we should continue the guide!
-    if (this.isProcessingClick) {
-      console.log('GuideMe: SPA navigation during click processing - will request continuation');
-      // URL changed during click, so request continuation after a delay
-      setTimeout(async () => {
-        if (this.isGuideActive && !this.isSavedGuideReplay) {
-          this.isProcessingClick = false;
-          this.isWaitingForAI = true;
-          this.clearHighlights();
-          this.currentHighlightedElement = null;
-          await this.waitForPageReady();
-          console.log('GuideMe: Requesting AI continuation after click-triggered navigation...');
-          this.requestGuideContinuation();
-        }
-      }, 800);
-      return;
-    }
-
-    // For SAVED GUIDE REPLAYS - use remaining steps, NO AI call
+    // The in-flight verifier owns click-triggered navigation. It checks the URL
+    // and advances once; navigation detection must not race it.
+    if (this.pendingAction) return;
+    this.actionController?.abort();
+    this.highlightController?.abort();
+    this.isProcessingClick = false;
     if (this.isSavedGuideReplay) {
-      console.log('GuideMe: Saved guide - using remaining steps, no AI call');
-      // Re-scan DOM for fresh element IDs
-      setTimeout(() => {
-        this.extractDOM();
-        if (this.currentSteps.length > this.currentStepIndex + 1) {
-          // Move to next step
-          this.currentStepIndex++;
-          this.highlightStep(this.currentStepIndex);
-          this.updateControlPanel();
-        } else {
-          // No more steps
-          this.showFinalCompletion();
-        }
-      }, 800);
-      return;
-    }
-
-    // LIVE GUIDE - save state for potential navigation
-    if (this.originalTask) {
-      this.saveStateForNavigation();
-      
-      // Clear highlights and set waiting flag immediately to prevent showing stale elements
-      this.isWaitingForAI = true;
-      this.clearHighlights();
-      this.currentHighlightedElement = null;
-      
-      // Wait for new content to load, then continue
-      setTimeout(async () => {
-        await this.waitForPageReady();
-        console.log('GuideMe: Requesting AI continuation after SPA navigation...');
-        this.requestGuideContinuation();
-      }, 800);
+      this.extractDOM();
+      this.highlightStep(this.currentStepIndex);
+      this.showVerificationHint('The page changed. Continue with the current saved step, or use Next to confirm it.');
+    } else if (this.originalTask) {
+      // Unrelated navigation is not completion of the previous step.
+      this.requestGuideContinuation();
     }
   }
 
+  async restoreTabGuide() {
+    const version = this.requestVersion;
+    try { this.ownerTabId = (await chrome.runtime.sendMessage({ type: 'GET_GUIDEME_TAB_ID' })).tabId || null; } catch {}
+    if (version !== this.requestVersion) return;
+    if (this.ownerTabId) {
+      try {
+        const key = `guideme_summary_${this.ownerTabId}`;
+        const summary = (await chrome.storage.local.get([key]))[key];
+        if (version !== this.requestVersion) return;
+        if (summary?.url === window.location.href) {
+          this.lastGuideSummary = summary;
+          this.originalTask = summary.task;
+          this.completedSteps = summary.completedSteps || [];
+          this.panelOwned = true;
+          this.panelPhase = summary.status || 'handoff';
+          this.startCompanionUpdates();
+          return;
+        }
+      } catch {}
+    }
+    this.checkForSavedGuide();
+  }
+
+  guideStorageKey() {
+    return this.panelOwned && this.ownerTabId ? `activeGuide_${this.ownerTabId}` : 'activeGuide';
+  }
+
   async checkForSavedGuide() {
+    const version = this.requestVersion;
     // Don't re-activate if guide is already running
     if (this.isGuideActive) {
       console.log('GuideMe: Guide already active, skipping check');
@@ -236,11 +260,12 @@ class GuideMeContent {
     try {
       // Check chrome.storage first
       let guideState = null;
-      const result = await chrome.storage.local.get(['activeGuide']);
+      const result = await chrome.storage.local.get(['activeGuide', `activeGuide_${this.ownerTabId}`]);
+      if (version !== this.requestVersion || this.isGuideActive) return;
       
-      if (result.activeGuide && result.activeGuide.task) {
-        guideState = result.activeGuide;
-      }
+      const candidate = result[`activeGuide_${this.ownerTabId}`] || result.activeGuide;
+      if (candidate?.panelOwned && candidate.ownerTabId && candidate.ownerTabId !== this.ownerTabId) return;
+      if (candidate?.task) guideState = candidate;
       
       // Also check localStorage backup (more reliable for navigation)
       try {
@@ -248,24 +273,18 @@ class GuideMeContent {
         if (backup) {
           const backupState = JSON.parse(backup);
           // Use backup if it's newer or if we don't have chrome.storage data
-          if (!guideState || (backupState.savedAt > (guideState.savedAt || 0))) {
+          const belongsHere = !backupState.panelOwned || !backupState.ownerTabId || backupState.ownerTabId === this.ownerTabId;
+          if (belongsHere && (!guideState || (backupState.savedAt > (guideState.savedAt || 0)))) {
             guideState = backupState;
           }
           // Clear the backup after reading
-          localStorage.removeItem('guideme_backup');
+          if (belongsHere) this.clearGuideBackup();
         }
       } catch (e) {}
       
       // Check if guide was marked as completed - DO NOT RESUME
       if (!guideState || guideState.completed || !guideState.task) {
         console.log('GuideMe: No active guide to resume or guide completed');
-        this.clearGuideState();
-        return;
-      }
-      
-      // CRITICAL: If this was marked as final batch (single-page task), don't resume
-      if (guideState.isFinalStepBatch) {
-        console.log('GuideMe: Single-page task (isFinalStepBatch), not resuming');
         this.clearGuideState();
         return;
       }
@@ -312,6 +331,9 @@ class GuideMeContent {
       console.log('GuideMe: Restored continuationCount:', guideState.continuationCount || 0);
       console.log('GuideMe: Restored savedGuideId:', guideState.savedGuideId || 'none');
       
+      this.panelOwned = guideState.panelOwned || false;
+      this.startCompanionUpdates();
+      this.isFinalStepBatch = guideState.isFinalStepBatch || false;
       this.originalTask = guideState.task;
       this.highlightColor = guideState.highlightColor || '#4F46E5';
       this.completedSteps = guideState.completedSteps || [];
@@ -336,6 +358,7 @@ class GuideMeContent {
       
       // Wait for page to be fully interactive
       await this.waitForPageReady();
+      if (version !== this.requestVersion || this.isGuideActive) return;
       
       // Check if we have remaining steps
       if (guideState.remainingSteps && guideState.remainingSteps.length > 0) {
@@ -346,6 +369,14 @@ class GuideMeContent {
         this.currentStepIndex = 0;
         this.isMultiPageTask = true;
         this.startGuide();
+        const pending = guideState.pendingAction;
+        if (pending && pending.fromUrl !== window.location.href &&
+            (!pending.step.expectedResult || pending.step.expectedResult.type === 'url-changed')) {
+          this.pendingAction = { step: this.currentSteps[0], robustSelectors: pending.robustSelectors, index: 0, before: { url: pending.fromUrl } };
+          this.nextStep('verified');
+        } else if (pending) {
+          this.showVerificationHint('The page changed. Check the result, then use Next to confirm this step.');
+        }
         this.saveGuideState();
       } else if (!this.isSavedGuideReplay) {
         // Live AI guide needs continuation - set waiting flag first
@@ -375,147 +406,51 @@ class GuideMeContent {
     }
   }
 
-  trackStepCompletion() {
-    // Track the current step as completed
-    const completedStep = this.currentSteps[this.currentStepIndex];
-    console.log('GuideMe: ===== trackStepCompletion START =====');
-    console.log('GuideMe: Step:', completedStep?.description?.substring(0, 50));
-    console.log('GuideMe: currentHighlightedElement:', this.currentHighlightedElement ? 'EXISTS' : 'NULL');
-    console.log('GuideMe: isSavedGuideReplay:', this.isSavedGuideReplay);
-    console.log('GuideMe: allStepsForSaving before:', (this.allStepsForSaving || []).length);
-    
-    // Update position in original steps for saved guide replays
+  trackStepCompletion(verification = 'manual') {
+    const step = this.currentSteps[this.currentStepIndex];
+    if (!step) return;
     if (this.isSavedGuideReplay && this.allOriginalSteps) {
-      this.originalStepIndex = (this.originalStepIndex || 0) + 1;
-      console.log('GuideMe: Updated originalStepIndex to', this.originalStepIndex, 'of', this.allOriginalSteps.length);
+      this.originalStepIndex = this.allOriginalSteps.length - this.currentSteps.length + this.currentStepIndex + 1;
     }
-    
-    if (completedStep) {
-      // CRITICAL: Capture robust selectors NOW while element is in DOM
-      let robustSelectors = null;
-      if (this.currentHighlightedElement) {
-        // Make sure element is still in DOM
-        if (document.body.contains(this.currentHighlightedElement)) {
-          robustSelectors = this.generateRobustSelectors(this.currentHighlightedElement);
-          console.log('GuideMe: ✓ Captured robust selectors:', Object.keys(robustSelectors || {}));
-        } else {
-          console.log('GuideMe: ✗ Element no longer in DOM!');
-        }
-      } else {
-        console.log('GuideMe: ✗ No currentHighlightedElement!');
-      }
-      
-      this.completedSteps.push({
-        description: completedStep.description || '',
-        action: completedStep.action || 'click',
-        page: window.location.href,
-        completedAt: Date.now(),
-        robustSelectors: robustSelectors // Store for replay!
-      });
-      
-      // Also add to allStepsForSaving with selectors
-      // Ensure allStepsForSaving is initialized
-      if (!this.allStepsForSaving) {
-        this.allStepsForSaving = [];
-        console.log('GuideMe: Initialized allStepsForSaving (was undefined)');
-      }
-      
-      if (!this.isSavedGuideReplay) {
-        const alreadyExists = this.allStepsForSaving.some(
-          s => s.description === completedStep.description
-        );
-        console.log('GuideMe: alreadyExists check:', alreadyExists);
-        
-        if (!alreadyExists) {
-          const stepToSave = {
-            description: completedStep.description,
-            action: completedStep.action || 'click',
-            element: completedStep.element || 'body',
-            robustSelectors: robustSelectors // Include robust selectors!
-          };
-          this.allStepsForSaving.push(stepToSave);
-          console.log('GuideMe: ✓ Added to allStepsForSaving:', stepToSave.description.substring(0, 30));
-          console.log('GuideMe: allStepsForSaving now:', this.allStepsForSaving.length);
-        } else {
-          console.log('GuideMe: ✗ Step already exists, not adding');
-        }
-      } else {
-        console.log('GuideMe: ✗ Not saving - isSavedGuideReplay:', this.isSavedGuideReplay);
-      }
-      
-      console.log('GuideMe: ===== trackStepCompletion END =====');
-    }
+    if (this.completedStepObjects.has(step)) return;
+    this.completedStepObjects.add(step);
+    const pending = this.pendingAction?.step === step ? this.pendingAction : null;
+    const element = pending?.element || this.currentHighlightedElement;
+    const robustSelectors = pending?.robustSelectors || (element?.isConnected ? this.generateRobustSelectors(element) : step.robustSelectors);
+    const captured = {
+      ...step,
+      robustSelectors,
+      verification,
+      pageUrl: pending?.before?.url || window.location.href,
+      completedAt: Date.now(),
+      resultUrl: window.location.href
+    };
+    this.completedSteps.push(captured);
+    if (!this.isSavedGuideReplay) this.allStepsForSaving.push(captured);
   }
 
   async saveStateForNavigation() {
-    // Calculate remaining steps (steps after current one in current batch)
-    const remainingSteps = this.currentSteps.slice(this.currentStepIndex + 1);
-    
-    // Mark current URL as visited
-    this.markUrlVisited(window.location.href);
-    
-    // Track total steps completed for multi-page progress
-    // This should count all steps done across all pages
-    const totalCompleted = (this.allStepsForSaving || []).length;
-    
-    // For recorded/saved guides, calculate remaining from ALL original steps
-    let allRemainingSteps = remainingSteps;
-    if (this.isSavedGuideReplay && this.allOriginalSteps) {
-      // Find current position in original steps
-      const currentOriginalIndex = this.originalStepIndex || 0;
-      allRemainingSteps = this.allOriginalSteps.slice(currentOriginalIndex + 1);
-      console.log('GuideMe: Saved guide - remaining from original:', allRemainingSteps.length, 'of', this.allOriginalSteps.length);
-    }
-    
-    // Save state immediately for potential navigation
-    const guideState = {
-      task: this.originalTask,
-      completedSteps: this.completedSteps,
-      highlightColor: this.highlightColor,
-      pageUrl: '', // Clear so new page triggers continuation
-      savedAt: Date.now(),
-      // Save remaining steps and replay flag to avoid AI calls on saved guides
-      remainingSteps: allRemainingSteps,
-      isSavedGuideReplay: this.isSavedGuideReplay,
-      isRecordedGuide: this.isRecordedGuide || false,
-      savedGuideId: this.savedGuideId || null, // CRITICAL: Preserve guide ID for editing!
-      guideWasEdited: this.guideWasEdited || false, // Preserve edit tracking
-      allOriginalSteps: this.allOriginalSteps || null, // Preserve full step list
-      originalStepIndex: (this.originalStepIndex || 0) + 1, // Next step position
-      allStepsForSaving: this.allStepsForSaving || [],
-      visitedUrls: this.visitedUrls || [],
-      totalStepsCompleted: totalCompleted, // Track multi-page progress
-      continuationCount: this.continuationCount || 0, // Preserve continuation count
-      isMultiPageTask: this.isMultiPageTask || false
-    };
-    
-    console.log('GuideMe: saveStateForNavigation - total steps:', totalCompleted, 'continuations:', this.continuationCount, 'guideId:', this.savedGuideId);
-    
-    // Save to BOTH storages for maximum reliability
-    // chrome.storage.local is shared across tabs, localStorage is per-origin
-    
-    // 1. Save to chrome.storage.local (shared across all tabs - most important for cross-domain!)
-    try {
-      await chrome.storage.local.set({ activeGuide: guideState });
-      console.log('GuideMe: ✓ Saved to chrome.storage.local');
-    } catch (e) {
-      console.error('GuideMe: chrome.storage save failed:', e);
-    }
-    
-    // 2. Also save to localStorage (faster, but per-origin only)
-    try {
-      localStorage.setItem('guideme_backup', JSON.stringify(guideState));
-      console.log('GuideMe: ✓ Saved to localStorage');
-    } catch (e) {
-      console.error('GuideMe: localStorage save failed:', e);
-    }
-    
-    console.log('GuideMe: State saved for navigation, remaining steps:', remainingSteps.length);
+    // Compatibility entry point. Only verified/confirmed steps are consumed.
+    return this.saveGuideState();
   }
 
   async requestGuideContinuation() {
+    const version = ++this.requestVersion;
+    const task = this.originalTask;
+    const pageUrl = window.location.href;
+    if (!task) return;
+    this.actionController?.abort();
+    this.highlightController?.abort();
+    this.isRevealingTarget = false;
+    this.isProcessingClick = false;
+    this.pendingAction = null;
+    this.continuationCount = (this.continuationCount || 0) + 1;
+    const isCurrent = () => version === this.requestVersion && task === this.originalTask && pageUrl === window.location.href;
     // IMPORTANT: Set flag to prevent stale element highlighting
+    this.lastGuideSummary = null;
+    if (this.ownerTabId) chrome.storage.local.remove([`guideme_summary_${this.ownerTabId}`]).catch(() => {});
     this.isWaitingForAI = true;
+    this.saveGuideState();
     
     // Clear any existing highlights before showing loading
     this.clearHighlights();
@@ -537,12 +472,14 @@ class GuideMeContent {
         payload: {
           task: this.originalTask,
           completedSteps: this.completedSteps,
+          guidancePreference: this.guidancePreference,
           dom: dom,
           url: window.location.href,
           title: document.title
         }
       });
       
+      if (!isCurrent()) return;
       console.log('GuideMe: requestGuideContinuation response:', {
         hasSteps: !!(response.steps && response.steps.length),
         stepCount: response.steps?.length || 0,
@@ -567,18 +504,11 @@ class GuideMeContent {
         console.log('GuideMe: Got', response.steps.length, 'steps, isFinalBatch:', this.isFinalStepBatch);
         this.startGuide();
         this.saveGuideState();
-      } else if (response.completed) {
-        console.log('GuideMe: AI says task complete (no more steps)');
-        this.isWaitingForAI = false; // Clear flag
-        await this.showTaskCompleted();
       } else {
-        // No steps and not completed - treat as complete to avoid stuck state
-        this.hideContinuationLoading();
-        this.isWaitingForAI = false; // Clear flag
-        console.log('GuideMe: No more steps returned - treating as complete');
-        await this.showTaskCompleted();
+        await this.finishGuidance(response);
       }
     } catch (error) {
+      if (!isCurrent()) return;
       console.error('GuideMe: Failed to continue guide:', error);
       this.isWaitingForAI = false; // Clear flag on error
       this.showContinuationError(error.message);
@@ -586,6 +516,11 @@ class GuideMeContent {
   }
 
   showContinuationLoading() {
+    this.panelPhase = 'planning';
+    this.panelMessage = '';
+    this.updateCompanionUI();
+    if (this.panelOwned) return;
+    this.hideContinuationLoading();
     // Create a simple loading panel
     const panel = document.createElement('div');
     panel.id = 'guideme-loading';
@@ -609,11 +544,16 @@ class GuideMeContent {
   }
 
   showContinuationError(message) {
+    this.panelPhase = 'error';
+    this.panelMessage = message;
+    this.updateCompanionUI();
+    if (this.panelOwned) return;
     this.hideContinuationLoading();
     console.error('GuideMe: Could not continue guide:', message);
     
     // DON'T clear state - show retry UI instead
-    // Create error panel with retry button
+    // Model/provider messages are text, never markup.
+    document.getElementById('guideme-error-panel')?.remove();
     const panel = document.createElement('div');
     panel.id = 'guideme-error-panel';
     const isRateLimit = message.toLowerCase().includes('rate') || message.toLowerCase().includes('limit') || message.toLowerCase().includes('quota');
@@ -624,7 +564,7 @@ class GuideMeContent {
           <span style="font-size:24px;">${isRateLimit ? '⏳' : '⚠️'}</span>
           <div>
             <div style="font-weight:600;margin-bottom:4px;">${isRateLimit ? 'API Rate Limited' : 'Connection Issue'}</div>
-            <div style="font-size:13px;opacity:0.8;">${isRateLimit ? 'Too many requests. Wait 10-15 seconds.' : message}</div>
+            <div class="guideme-error-message" style="font-size:13px;opacity:0.8;"></div>
           </div>
         </div>
         <div style="display:flex;gap:12px;">
@@ -637,6 +577,7 @@ class GuideMeContent {
         </div>
       </div>
     `;
+    panel.querySelector('.guideme-error-message').textContent = isRateLimit ? 'Too many requests. Wait 10-15 seconds.' : message;
     document.body.appendChild(panel);
     
     // Bind events
@@ -646,44 +587,14 @@ class GuideMeContent {
     });
     document.getElementById('guideme-cancel-btn').addEventListener('click', () => {
       panel.remove();
-      this.clearGuideState();
+      this.stopGuide();
     });
   }
 
   async showTaskCompleted() {
     this.hideContinuationLoading();
-    
-    console.log('GuideMe: showTaskCompleted called, allStepsForSaving:', (this.allStepsForSaving || []).length);
-    
-    // Auto-save BEFORE clearing state (so we don't lose steps from previous pages!)
-    if (!this.isSavedGuideReplay && (this.allStepsForSaving || []).length > 0) {
-      console.log('GuideMe: Auto-saving before completion clear...');
-      await this.autoSaveGuideIfEnabled();
-    }
-    
-    // Clear highlights and control panel FIRST
-    this.clearHighlights();
-    
-    // THEN clear all state to prevent re-activation
-    this.isGuideActive = false;
-    await this.clearGuideState();
-    try {
-      localStorage.removeItem('guideme_backup');
-    } catch (e) {}
-    console.log('GuideMe: Task completed - all state cleared');
-    
-    const panel = document.createElement('div');
-    panel.innerHTML = `
-      <div style="position:fixed;bottom:20px;right:20px;background:#10B981;color:white;padding:20px 28px;border-radius:12px;font-family:system-ui;z-index:2147483647;box-shadow:0 4px 20px rgba(0,0,0,0.3);">
-        <div style="font-size:18px;font-weight:600;">🎉 Task Complete!</div>
-        <div style="margin-top:8px;opacity:0.9;">Your guide has finished.</div>
-      </div>
-    `;
-    document.body.appendChild(panel);
-    setTimeout(() => panel.remove(), 4000);
-    
-    // Stop the guide (removes control panel)
-    this.stopGuide();
+    if (!this.controlPanel) this.createControlPanel();
+    return this.showFinalCompletion();
   }
 
   // ============ SAVE GUIDE FROM FLOATING PANEL ============
@@ -858,14 +769,14 @@ class GuideMeContent {
       // Try to find the actual element to extract robust selectors
       let element = null;
       if (elementId && elementId.startsWith('gm-')) {
-        element = document.querySelector(`[data-guideme-id="${elementId}"]`);
+        element = this.pageIntelligence.elements.get(elementId);
       }
       
-      if (element) {
+      if (element?.isConnected) {
         // Generate multiple fallback selectors
         enhanced.robustSelectors = this.generateRobustSelectors(element);
         console.log(`GuideMe: Step ${index + 1} enhanced with selectors:`, enhanced.robustSelectors);
-      } else {
+      } else if (!enhanced.robustSelectors) {
         // Element not in current DOM - use text-based fallback
         enhanced.robustSelectors = {
           description: step.description || step.instruction || '',
@@ -881,46 +792,6 @@ class GuideMeContent {
   }
 
   // Generate multiple selectors for an element (for robust replay)
-  generateRobustSelectors(element) {
-    console.log('GuideMe: generateRobustSelectors called for:', element?.tagName, element?.id || '(no id)');
-    
-    const selectors = {
-      // Most stable - data attributes
-      dataTestId: element.dataset?.testid || element.dataset?.testId || element.getAttribute('data-test-id'),
-      dataId: element.dataset?.id,
-      
-      // Semantic - good stability
-      ariaLabel: element.getAttribute('aria-label'),
-      role: element.getAttribute('role'),
-      name: element.name,
-      title: element.title,
-      
-      // ID - only if it doesn't look dynamic
-      id: element.id && !element.id.match(/^[0-9]/) && !element.id.match(/[0-9]{5,}/) ? element.id : null,
-      
-      // Text content - last resort
-      textContent: this.getElementText(element)?.substring(0, 60)?.trim(),
-      
-      // Tag info
-      tagName: element.tagName?.toLowerCase(),
-      type: element.type,
-      
-      // Unique CSS selector (generated)
-      cssSelector: this.generateStableSelector(element),
-      
-      // Visual position hint
-      position: this.getElementPosition(element)
-    };
-    
-    // Remove null/undefined values
-    Object.keys(selectors).forEach(key => {
-      if (!selectors[key]) delete selectors[key];
-    });
-    
-    console.log('GuideMe: generateRobustSelectors returning:', Object.keys(selectors));
-    return selectors;
-  }
-
   // Generate a stable CSS selector that doesn't rely on dynamic IDs
   generateStableSelector(element) {
     try {
@@ -1043,82 +914,61 @@ class GuideMeContent {
   }
 
   async saveGuideState() {
+    if (!this.originalTask) return;
+    const pending = this.pendingAction;
+    const guideState = {
+      task: this.originalTask,
+      steps: this.currentSteps,
+      currentStepIndex: this.currentStepIndex,
+      highlightColor: this.highlightColor,
+      completedSteps: this.completedSteps,
+      pageUrl: window.location.href,
+      savedAt: Date.now(),
+      remainingSteps: this.currentSteps.slice(this.currentStepIndex + (this.completedStepObjects.has(this.currentSteps[this.currentStepIndex]) ? 1 : 0)),
+      pendingAction: pending ? {
+        fromUrl: pending.before.url,
+        step: pending.step,
+        robustSelectors: pending.robustSelectors
+      } : null,
+      isSavedGuideReplay: this.isSavedGuideReplay,
+      isRecordedGuide: this.isRecordedGuide,
+      savedGuideId: this.savedGuideId,
+      guideWasEdited: this.guideWasEdited,
+      allOriginalSteps: this.allOriginalSteps,
+      originalStepIndex: this.originalStepIndex,
+      allStepsForSaving: this.allStepsForSaving,
+      visitedUrls: this.visitedUrls,
+      totalStepsCompleted: this.allStepsForSaving.length,
+      continuationCount: this.continuationCount || 0,
+      isMultiPageTask: this.isMultiPageTask,
+      isFinalStepBatch: this.isFinalStepBatch,
+      panelOwned: this.panelOwned,
+      ownerTabId: this.ownerTabId
+    };
+    // Write the full checkpoint synchronously before navigation can unload us.
+    try { localStorage.setItem('guideme_backup', JSON.stringify(guideState)); } catch {}
+    try { await chrome.storage.local.set({ [this.guideStorageKey()]: guideState }); }
+    catch (error) { console.error('GuideMe: Failed to save guide state', error); }
+  }
+
+  clearGuideBackup() {
     try {
-      // Calculate remaining steps for cross-page continuation
-      let remainingSteps = this.currentSteps.slice(this.currentStepIndex + 1);
-      
-      // For saved/recorded guides, calculate remaining from ALL original steps
-      if (this.isSavedGuideReplay && this.allOriginalSteps) {
-        const currentOriginalIndex = this.originalStepIndex || 0;
-        remainingSteps = this.allOriginalSteps.slice(currentOriginalIndex);
-        console.log('GuideMe: Saved guide - remaining:', remainingSteps.length, 'of', this.allOriginalSteps.length);
-      }
-      
-      await chrome.storage.local.set({
-        activeGuide: {
-          task: this.originalTask,
-          steps: this.currentSteps,
-          currentStepIndex: this.currentStepIndex,
-          highlightColor: this.highlightColor,
-          completedSteps: this.completedSteps || [],
-          pageUrl: window.location.href,
-          savedAt: Date.now(),
-          // Include remaining steps and flags for cross-page continuation
-          remainingSteps: remainingSteps,
-          isSavedGuideReplay: this.isSavedGuideReplay || false,
-          isRecordedGuide: this.isRecordedGuide || false,
-          savedGuideId: this.savedGuideId || null, // CRITICAL for edit persistence!
-          guideWasEdited: this.guideWasEdited || false, // Track if edits were made
-          allOriginalSteps: this.allOriginalSteps || null,
-          originalStepIndex: this.originalStepIndex || 0,
-          allStepsForSaving: this.allStepsForSaving || [],
-          visitedUrls: this.visitedUrls || [],
-          totalStepsCompleted: (this.allStepsForSaving || []).length,
-          continuationCount: this.continuationCount || 0,
-          isMultiPageTask: this.isMultiPageTask || false,
-          isFinalStepBatch: this.isFinalStepBatch || false // Marks single-page tasks as complete
-        }
-      });
-      
-      // Also save to localStorage as backup (more reliable for navigation)
-      try {
-        localStorage.setItem('guideme_backup', JSON.stringify({
-          task: this.originalTask,
-          completedSteps: this.completedSteps || [],
-          highlightColor: this.highlightColor,
-          savedAt: Date.now(),
-          remainingSteps: remainingSteps,
-          isSavedGuideReplay: this.isSavedGuideReplay || false,
-          isRecordedGuide: this.isRecordedGuide || false,
-          savedGuideId: this.savedGuideId || null, // CRITICAL: Save guide ID for edit persistence!
-          guideWasEdited: this.guideWasEdited || false, // Track if edits were made
-          allOriginalSteps: this.allOriginalSteps || null,
-          originalStepIndex: this.originalStepIndex || 0,
-          allStepsForSaving: this.allStepsForSaving || [],
-          visitedUrls: this.visitedUrls || [],
-          isFinalStepBatch: this.isFinalStepBatch || false // Marks single-page tasks as complete
-        }));
-      } catch (e) {
-        console.log('GuideMe: localStorage backup failed:', e);
-      }
-      
-      console.log('GuideMe: Guide state saved, remaining steps:', remainingSteps.length, 'isSavedGuide:', this.isSavedGuideReplay, 'guideId:', this.savedGuideId);
-    } catch (error) {
-      console.error('GuideMe: Failed to save guide state', error);
-    }
+      const backup = JSON.parse(localStorage.getItem('guideme_backup') || 'null');
+      if (!backup?.panelOwned || !backup.ownerTabId || backup.ownerTabId === this.ownerTabId) localStorage.removeItem('guideme_backup');
+    } catch {}
   }
 
   async clearGuideState() {
     try {
       // Set completed flag BEFORE removing, in case of race conditions
       await chrome.storage.local.set({ 
-        activeGuide: { completed: true, clearedAt: Date.now() } 
+        [this.guideStorageKey()]: { completed: true, clearedAt: Date.now() }
       });
       // Then remove completely
-      await chrome.storage.local.remove(['activeGuide']);
+      await chrome.storage.local.remove([this.guideStorageKey()]);
       // Also clear localStorage backup
       try {
-        localStorage.removeItem('guideme_backup');
+        this.clearGuideBackup();
       } catch (e) {}
       console.log('GuideMe: Guide state cleared completely');
     } catch (error) {
@@ -1128,11 +978,73 @@ class GuideMeContent {
 
   handleMessage(message, sender, sendResponse) {
     switch (message.type) {
+      case 'SET_PANEL_VISIBILITY':
+        this.panelOwned = true;
+        this.panelVisibleUntil = message.visible ? Date.now() + 3000 : 0;
+        this.startCompanionUpdates();
+        this.updateCompanionUI();
+        sendResponse({ success: true });
+        break;
+
+      case 'PREPARE_GUIDE_TASK':
+        this.stopGuide();
+        this.panelOwned = true;
+        this.isPreparingTask = true;
+        this.panelPhase = 'planning';
+        this.lastGuideSummary = null;
+        this.originalTask = message.task;
+        this.guidancePreference = 'auto';
+        this.startCompanionUpdates();
+        this.updateCompanionUI();
+        sendResponse({ success: true });
+        break;
+
+      case 'GUIDE_TASK_ERROR':
+        this.isPreparingTask = false;
+        this.panelPhase = 'error';
+        this.panelMessage = message.error;
+        this.updateCompanionUI();
+        sendResponse({ success: true });
+        break;
+
+      case 'SHOW_GUIDE_OUTCOME':
+        this.panelOwned = true;
+        this.ownerTabId ||= message.payload.tabId || null;
+        this.originalTask = message.payload.task || this.originalTask;
+        this.finishGuidance(message.payload).then(() => sendResponse({ success: true })).catch(error => sendResponse({ error: error.message }));
+        break;
+
+      case 'DISMISS_GUIDE_OUTCOME':
+        this.lastGuideSummary = null;
+        this.panelPhase = 'idle';
+        if (this.ownerTabId) chrome.storage.local.remove([`guideme_summary_${this.ownerTabId}`]).catch(() => {});
+        sendResponse({ success: true });
+        break;
+
+      case 'REFRESH_GUIDE':
+        if (message.preferSteps) this.guidancePreference = 'step-by-step';
+        this.refreshAndReHighlight();
+        sendResponse({ success: true });
+        break;
+
       case 'GET_DOM':
         sendResponse(this.extractDOM());
         break;
       
       case 'START_GUIDE':
+        this.isPreparingTask = false;
+        this.lastGuideSummary = null;
+        this.panelOwned = message.payload.presentationMode === 'sidepanel' || this.panelOwned;
+        this.panelMessage = '';
+        this.panelPhase = 'locating';
+        this.startCompanionUpdates();
+        this.requestVersion++;
+        this.removeEventListeners();
+        this.isWaitingForAI = false;
+        this.isRevealingTarget = false;
+        this.completedStepObjects = new WeakSet();
+        this.completedSteps = [];
+        this.totalStepsCompleted = 0;
         this.currentSteps = message.payload.steps;
         this.highlightColor = message.payload.highlightColor || '#4F46E5';
         this.currentStepIndex = 0;
@@ -1185,7 +1097,20 @@ class GuideMeContent {
         sendResponse({ success: true });
         break;
       
+      case 'ADVANCE_GUIDE':
+        this.nextStep('manual');
+        sendResponse({ success: true });
+        break;
+
+      case 'PREVIOUS_GUIDE_STEP':
+        this.prevStep();
+        sendResponse({ success: true });
+        break;
+
       case 'HIGHLIGHT_STEP':
+        this.actionController?.abort();
+        this.pendingAction = null;
+        this.isProcessingClick = false;
         this.currentStepIndex = message.payload.stepIndex;
         this.highlightColor = message.payload.highlightColor || this.highlightColor;
         this.highlightStep(this.currentStepIndex);
@@ -1195,6 +1120,9 @@ class GuideMeContent {
         break;
       
       case 'UPDATE_STEPS':
+        this.actionController?.abort();
+        this.pendingAction = null;
+        this.isProcessingClick = false;
         // Update steps from popup (after edit/delete)
         if (message.payload.steps) {
           // For saved guide replays, the popup sends ALL original steps
@@ -1286,6 +1214,15 @@ class GuideMeContent {
         // For saved guides, return allOriginalSteps (complete guide) + current position info
         sendResponse({
           task: this.originalTask,
+          activity: this.getPanelActivity(),
+          completedSteps: this.completedSteps.map(step => ({ description: step.description, verification: step.verification, completedAt: step.completedAt })),
+          lastInteraction: this.lastInteraction,
+          lastGuideSummary: this.lastGuideSummary,
+          formContext: this.getFormContext(),
+          pageStats: this.lastDomSnapshot ? { elements: this.lastDomSnapshot.elements.length, truncated: this.lastDomSnapshot.truncated } : null,
+          isGuideActive: this.isGuideActive,
+          isWaitingForAI: this.isWaitingForAI,
+          isFinalStepBatch: this.isFinalStepBatch,
           steps: this.currentSteps,
           allOriginalSteps: this.allOriginalSteps || null, // Full guide for proper editing
           currentStepIndex: this.currentStepIndex,
@@ -2057,6 +1994,7 @@ class GuideMeContent {
   }
 
   startGuide() {
+    this.isPreparingTask = false;
     this.isGuideActive = true;
     this.isProcessingClick = false; // Reset click processing flag
     // Reset counters for fresh guide (but not if continuing)
@@ -2070,6 +2008,16 @@ class GuideMeContent {
   }
 
   stopGuide() {
+    this.isPreparingTask = false;
+    this.panelPhase = 'idle';
+    this.panelMessage = '';
+    this.lastGuideSummary = null;
+    this.lastInteraction = null;
+    if (this.ownerTabId) chrome.storage.local.remove([`guideme_summary_${this.ownerTabId}`]).catch(() => {});
+    this.companionDock?.remove();
+    this.companionDock = null;
+    this.requestVersion++;
+    this.highlightController?.abort();
     this.isGuideActive = false;
     this.isWaitingForAI = false; // Reset AI waiting flag
     this.isProcessingClick = false; // Reset click processing flag
@@ -2079,6 +2027,8 @@ class GuideMeContent {
       this.pendingRetry = null;
     }
     this.clearHighlights();
+    this.hideContinuationLoading();
+    document.getElementById('guideme-error-panel')?.remove();
     this.removeControlPanel();
     this.removeEventListeners();
     this.currentSteps = [];
@@ -2095,7 +2045,7 @@ class GuideMeContent {
     // Clear ALL saved state to prevent unwanted resumption
     this.clearGuideState();
     try {
-      localStorage.removeItem('guideme_backup');
+      this.clearGuideBackup();
     } catch (e) {}
     
     // Note: We keep SPA detection active as it's needed for new guides
@@ -2105,6 +2055,8 @@ class GuideMeContent {
   // Stop only the LOCAL guide instance without clearing shared storage
   // Used when user navigates to a new tab - we don't want to wipe state needed by the new tab
   stopGuideLocalOnly() {
+    this.requestVersion++;
+    this.highlightController?.abort();
     this.isGuideActive = false;
     // Cancel any pending retries
     if (this.pendingRetry) {
@@ -2149,23 +2101,10 @@ class GuideMeContent {
   }
 
   setupEventListeners() {
+    this.removeEventListeners();
     // CRITICAL: Save state before page unloads (navigation)
     this.beforeUnloadHandler = () => {
-      if (this.isGuideActive && this.originalTask) {
-        // Synchronously save to storage before page unloads
-        const guideState = {
-          task: this.originalTask,
-          completedSteps: this.completedSteps || [],
-          highlightColor: this.highlightColor,
-          pageUrl: '', // Clear URL so new page triggers continuation
-          savedAt: Date.now()
-        };
-        // Use synchronous localStorage as backup (chrome.storage is async)
-        try {
-          localStorage.setItem('guideme_backup', JSON.stringify(guideState));
-        } catch (e) {}
-        console.log('GuideMe: Saved state before navigation');
-      }
+      if (this.isGuideActive && this.originalTask) this.saveGuideState();
     };
     window.addEventListener('beforeunload', this.beforeUnloadHandler);
 
@@ -2185,78 +2124,88 @@ class GuideMeContent {
     };
     window.addEventListener('resize', this.resizeHandler);
 
+    const editingTarget = event => {
+      const element = this.currentHighlightedElement;
+      const step = this.currentSteps[this.currentStepIndex];
+      if (!event.isTrusted || !this.isGuideActive || this.isWaitingForAI || !element || !['type', 'select'].includes(step?.action)) return null;
+      if (event.target !== element && !element.contains(event.target)) return null;
+      return { element, step };
+    };
+    this.fieldInputHandler = event => {
+      const target = editingTarget(event);
+      if (!target) return;
+      this.stepVerifier.recordEdit(target.element);
+      this.panelPhase = 'ready';
+      this.panelMessage = 'Finish this field, then press Tab or choose Next. Your field contents stay on this page.';
+      this.updateCompanionUI();
+    };
+    this.fieldCommitHandler = event => {
+      const target = editingTarget(event);
+      if (!target || !this.stepBaseline || this.stepBaseline.element !== target.element) return;
+      if (event.type === 'change') {
+        this.stepVerifier.recordEdit(target.element);
+        if (target.step.action !== 'select') return;
+      }
+      if (event.type === 'keydown' && (event.key !== 'Enter' || target.element.matches('textarea, [contenteditable="true"]'))) return;
+      const edited = { ...target.step, expectedResult: { type: 'field-edited' } };
+      if (this.stepVerifier.check(edited, this.stepBaseline)) this.nextStep('verified');
+    };
+    document.addEventListener('input', this.fieldInputHandler, true);
+    document.addEventListener('focusout', this.fieldCommitHandler, true);
+    document.addEventListener('change', this.fieldCommitHandler, true);
+    document.addEventListener('keydown', this.fieldCommitHandler, true);
+
     // Detect clicks on highlighted element to auto-advance
-    this.clickHandler = async (e) => {
-      if (!this.isGuideActive) return;
-      
-      // Prevent double-processing
-      if (this.isProcessingClick) {
-        console.log('GuideMe: Already processing a click - ignoring');
+    this.clickHandler = async (event) => {
+      if (!event.isTrusted || !this.isGuideActive || this.isProcessingClick || !this.currentHighlightedElement) return;
+      const element = this.currentHighlightedElement;
+      const step = this.currentSteps[this.currentStepIndex];
+      if (['type', 'select'].includes(step?.action)) return; // Editing completes on commit, never merely on focus.
+      const path = event.composedPath ? event.composedPath() : [];
+      if (event.target !== element && !element.contains(event.target) && !path.includes(element)) return;
+      // Field focus is not evidence that typing/selecting has finished.
+      if (!['click', 'focus'].includes(step?.action || 'click')) return;
+      if (!this.pageIntelligence.isReachable(element)) return;
+      if (this.findElement(step.element || step.selector, step.description, step.robustSelectors, step.targetDescriptor) !== element) {
+        this.clearHighlights();
+        this.currentHighlightedElement = null;
+        this.showVerificationHint('This control changed. Refresh the guide before continuing.');
         return;
       }
-      
-      // CRITICAL: Only advance if we have a highlighted element AND user clicked on it
-      if (!this.currentHighlightedElement) {
-        console.log('GuideMe: Click detected but no highlighted element - ignoring');
-        return;
-      }
-      
-      // Check if clicked element is or contains the highlighted element (support shadow DOM)
-      const path = e.composedPath ? e.composedPath() : [];
-      const clickedOnHighlighted =
-        e.target === this.currentHighlightedElement ||
-        this.currentHighlightedElement.contains(e.target) ||
-        path.includes(this.currentHighlightedElement);
-      
-      if (!clickedOnHighlighted) {
-        console.log('GuideMe: Click was not on highlighted element - ignoring');
-        return;
-      }
-      
-      // Set flag to prevent double-processing
       this.isProcessingClick = true;
-      console.log('GuideMe: User clicked highlighted element, advancing...');
-      
-      // Get current step info to check if it's a navigation action
-      const currentStep = this.currentSteps[this.currentStepIndex];
-      const isNavigationClick = this.isNavigationStep(currentStep);
-      
-      // IMMEDIATELY save state before navigation might occur
-      this.trackStepCompletion();
-      await this.saveStateForNavigation(); // MUST await to ensure data is saved before navigation!
-      
-      if (isNavigationClick) {
-        // For navigation clicks, DON'T call nextStep() here
-        // The next page load will resume the guide automatically
-        console.log('GuideMe: Navigation step clicked - waiting for page change');
-        // Store the current step index so we can check if it changed
-        const stepIndexAtClick = this.currentStepIndex;
-        // Clear processing flag after a delay (in case navigation doesn't happen)
-        setTimeout(() => {
-          this.isProcessingClick = false;
-          // Only auto-advance if:
-          // 1. Guide is still active
-          // 2. We're still on the same page (no navigation occurred)
-          // 3. We're still on the SAME step (nothing else advanced us)
-          if (this.isGuideActive && 
-              this.lastUrl === window.location.href && 
-              this.currentStepIndex === stepIndexAtClick) {
-            console.log('GuideMe: Navigation didnt occur and still on same step, advancing manually');
-            this.nextStep();
-          } else {
-            console.log('GuideMe: Not auto-advancing - guide active:', this.isGuideActive, 
-                        'same URL:', this.lastUrl === window.location.href,
-                        'same step:', this.currentStepIndex === stepIndexAtClick);
-          }
-        }, 2000); // Increased to 2s to give more time for navigation
+      this.actionController?.abort();
+      this.actionController = new AbortController();
+      const { signal } = this.actionController;
+      const before = this.stepVerifier.capture(step, element);
+      // Native checkboxes/radios toggle before the click capture phase. Use the
+      // last highlighted baseline so their default action is still observable.
+      if (before.state.nativeChecked !== null && this.stepBaseline?.element === element) {
+        before.state.nativeChecked = this.stepBaseline.state.nativeChecked;
+      }
+      this.lastInteraction = { action: 'click', targetName: this.pageIntelligence.name(element), elementId: step.element, at: Date.now(), result: 'checking' };
+      this.panelMessage = `Click on “${this.lastInteraction.targetName || 'the control'}” registered. Checking the page.`;
+      this.updateCompanionUI();
+      this.pendingAction = {
+        step, before, element,
+        robustSelectors: this.generateRobustSelectors(element),
+        index: this.currentStepIndex
+      };
+      // Persist the CURRENT step before the page's own handlers can navigate.
+      // It is only consumed after navigation or another expected result is observed.
+      this.saveGuideState();
+      const result = await this.stepVerifier.wait(step, before, { signal, timeout: this.isSavedGuideReplay ? 5000 : 1800 });
+      if (signal.aborted || !this.isGuideActive || this.currentSteps[this.currentStepIndex] !== step) return;
+      if (result.status === 'verified') {
+        this.lastInteraction.result = 'verified';
+        this.nextStep('verified');
+      } else if (!this.isSavedGuideReplay && (step.action || 'click') === 'click') {
+        this.lastInteraction.result = 'unverified';
+        this.nextStep('observed');
       } else {
-        // For non-navigation clicks, advance after a short delay
-        setTimeout(() => {
-          if (this.isGuideActive) {
-            this.nextStep();
-          }
-          this.isProcessingClick = false;
-        }, 600);
+        this.pendingAction = null;
+        this.isProcessingClick = false;
+        this.showVerificationHint('Result not confirmed. Check the page, then choose Next to confirm this step, or retry the control.');
+        this.saveGuideState();
       }
     };
     document.addEventListener('click', this.clickHandler, true);
@@ -2271,36 +2220,16 @@ class GuideMeContent {
         return;
       }
       
-      // Check if highlighted element was removed from DOM
-      if (this.currentHighlightedElement && !document.body.contains(this.currentHighlightedElement)) {
-        console.log('GuideMe: Highlighted element removed from DOM, clearing highlight');
-        this.clearHighlights();
-        this.currentHighlightedElement = null;
-        // Try to re-find and highlight
-        setTimeout(() => {
-          if (this.isGuideActive && this.currentSteps.length > 0 && !this.isWaitingForAI) {
-            this.highlightStep(this.currentStepIndex);
-          }
-        }, 300);
-        return;
-      }
-      
-      // If we don't have a highlighted element yet, try to find it
-      if (!this.currentHighlightedElement && this.currentSteps.length > 0 && !this.isWaitingForAI) {
-        const step = this.currentSteps[this.currentStepIndex];
-        if (step) {
-          const selector = step.element || step.selector;
-          const description = step.description || step.instruction || '';
-          const element = this.findElement(selector, description);
-          if (element) {
-            console.log('GuideMe: Found element after DOM update');
-            this.currentHighlightedElement = element;
-            this.createHighlight(element);
-          }
-        }
+      if (this.isRevealingTarget || this.isProcessingClick) return;
+      if (!this.currentHighlightedElement || !this.currentHighlightedElement.isConnected) {
+        if (this.pendingRetry) return;
+        this.pendingRetry = setTimeout(() => {
+          this.pendingRetry = null;
+          if (this.isGuideActive && !this.isWaitingForAI) this.highlightStep(this.currentStepIndex);
+        }, 200);
       }
     });
-    
+
     this.mutationObserver.observe(document.body, {
       childList: true,
       subtree: true,
@@ -2309,6 +2238,9 @@ class GuideMeContent {
   }
 
   removeEventListeners() {
+    this.actionController?.abort();
+    this.pendingAction = null;
+    this.isProcessingClick = false;
     if (this.beforeUnloadHandler) {
       window.removeEventListener('beforeunload', this.beforeUnloadHandler);
       this.beforeUnloadHandler = null;
@@ -2325,10 +2257,77 @@ class GuideMeContent {
       document.removeEventListener('click', this.clickHandler, true);
       this.clickHandler = null;
     }
+    if (this.fieldInputHandler) document.removeEventListener('input', this.fieldInputHandler, true);
+    if (this.fieldCommitHandler) {
+      for (const type of ['focusout', 'change', 'keydown']) document.removeEventListener(type, this.fieldCommitHandler, true);
+    }
+    this.fieldInputHandler = this.fieldCommitHandler = null;
     if (this.mutationObserver) {
       this.mutationObserver.disconnect();
       this.mutationObserver = null;
     }
+  }
+
+  getFormContext() {
+    const surface = this.currentHighlightedElement?.closest('[role="dialog"], [aria-modal="true"], dialog[open], form') ||
+      document.activeElement?.closest('[role="dialog"], [aria-modal="true"], dialog[open], form');
+    return surface && this.pageIntelligence.isVisible(surface) ? this.pageIntelligence.surfaceContext(surface) : null;
+  }
+
+  getPanelActivity() {
+    const phase = this.isRecording ? 'recording' : this.isPreparingTask || this.isWaitingForAI ? 'planning'
+      : this.isProcessingClick ? 'verifying'
+      : this.isRevealingTarget ? 'locating'
+      : this.lastGuideSummary && !this.isGuideActive ? this.lastGuideSummary.status || 'handoff'
+      : this.isGuideActive ? this.panelPhase === 'idle' ? 'ready' : this.panelPhase
+      : this.panelPhase;
+    return { phase, detail: this.panelMessage, task: this.originalTask || this.lastGuideSummary?.task || '' };
+  }
+
+  startCompanionUpdates() {
+    if (!this.panelOwned || this.companionInterval) return;
+    this.companionInterval = setInterval(() => this.updateCompanionUI(), 750);
+  }
+
+  updateCompanionUI() {
+    if (!this.panelOwned) return;
+    const visible = Date.now() < this.panelVisibleUntil;
+    if (this.controlPanel) this.controlPanel.style.display = 'none';
+    const activity = this.getPanelActivity();
+    const fingerprint = JSON.stringify([activity, this.completedSteps.length]);
+    if (fingerprint !== this.lastPublishedActivity) {
+      this.lastPublishedActivity = fingerprint;
+      chrome.runtime.sendMessage({ type: 'GUIDE_ACTIVITY', payload: activity }).catch(() => {});
+    }
+    const running = this.isGuideActive || this.isPreparingTask || ['planning', 'error', 'attention', 'handoff', 'blocked', 'complete'].includes(activity.phase);
+    if (visible || !running) {
+      this.companionDock?.remove();
+      this.companionDock = null;
+      return;
+    }
+    if (!this.companionDock) {
+      const dock = document.createElement('div');
+      dock.id = 'guideme-companion-dock';
+      dock.dataset.guidemeTheme = this.appearanceTheme;
+      dock.setAttribute('data-guideme-ui', '');
+      dock.innerHTML = `<button class="gm-dock-open" aria-label="Open GuideMe workspace"><span class="gm-dock-dot"></span><span class="gm-dock-label">GuideMe</span><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></svg></button><button class="gm-dock-next" title="Confirm this step manually">Next</button><button class="gm-dock-stop" aria-label="Stop guide">Stop</button>`;
+      dock.querySelector('.gm-dock-open').addEventListener('click', () => {
+        chrome.runtime.sendMessage({ type: 'OPEN_GUIDE_PANEL' }).then(result => {
+          if (result?.error) dock.querySelector('.gm-dock-label').textContent = 'Open GuideMe from the toolbar';
+        }).catch(() => {});
+      });
+      dock.querySelector('.gm-dock-next').addEventListener('click', () => this.nextStep('manual'));
+      dock.querySelector('.gm-dock-stop').addEventListener('click', () => {
+        chrome.runtime.sendMessage({ type: 'CANCEL_GUIDE_TASK' }).catch(() => {});
+        this.stopGuide();
+      });
+      document.body.append(dock);
+      this.companionDock = dock;
+    }
+    const busy = ['reading', 'planning', 'locating', 'verifying'].includes(activity.phase);
+    this.companionDock.dataset.busy = String(busy);
+    this.companionDock.querySelector('.gm-dock-label').textContent = ['handoff', 'blocked', 'complete'].includes(activity.phase) ? 'GuideMe · View summary' : busy ? activity.phase === 'verifying' ? 'Checking result' : 'GuideMe is working' : activity.phase === 'error' || activity.phase === 'attention' ? 'GuideMe needs you' : 'GuideMe · Guide active';
+    this.companionDock.querySelector('.gm-dock-next').hidden = !this.isGuideActive || busy;
   }
 
   createControlPanel() {
@@ -2470,59 +2469,21 @@ class GuideMeContent {
     this.makeDraggable(panel);
 
     this.updateControlPanel();
+    this.updateCompanionUI();
   }
 
   async refreshAndReHighlight() {
-    console.log('GuideMe: Manual refresh requested - re-extracting DOM');
-    
-    // Show loading state
-    const refreshBtn = this.controlPanel?.querySelector('.guideme-refresh-btn');
-    if (refreshBtn) {
-      refreshBtn.textContent = '⏳';
-      refreshBtn.disabled = true;
+    this.actionController?.abort();
+    this.pendingAction = null;
+    this.isProcessingClick = false;
+    this.isRevealingTarget = false;
+    if (this.isSavedGuideReplay) {
+      this.extractDOM();
+      this.highlightStep(this.currentStepIndex);
+      this.updateControlPanel();
+      return;
     }
-    
-    // Clear old element IDs and re-extract
-    document.querySelectorAll('[data-guideme-id]').forEach(el => {
-      el.removeAttribute('data-guideme-id');
-    });
-    
-    // Re-extract DOM with fresh IDs
-    const dom = this.extractDOM();
-    console.log('GuideMe: Re-extracted', dom.elements.length, 'elements');
-    
-    // Ask AI for steps on this refreshed DOM
-    try {
-      const response = await chrome.runtime.sendMessage({
-        type: 'CONTINUE_GUIDE',
-        payload: {
-          task: this.originalTask,
-          completedSteps: this.completedSteps,
-          dom: dom,
-          url: window.location.href,
-          title: document.title
-        }
-      });
-      
-      if (response.steps && response.steps.length > 0) {
-        this.currentSteps = response.steps;
-        this.currentStepIndex = 0;
-        this.highlightStep(0);
-        this.updateControlPanel();
-        
-        // Hide not found message
-        const notFoundEl = this.controlPanel?.querySelector('.guideme-not-found');
-        if (notFoundEl) notFoundEl.style.display = 'none';
-      }
-    } catch (error) {
-      console.error('GuideMe: Refresh failed:', error);
-    }
-    
-    // Reset button
-    if (refreshBtn) {
-      refreshBtn.textContent = '🔄';
-      refreshBtn.disabled = false;
-    }
+    return this.requestGuideContinuation();
   }
 
   makeDraggable(panel) {
@@ -2598,7 +2559,7 @@ class GuideMeContent {
         if (isNavStep) {
           hintText = '👆 Click the highlighted element (this will navigate to a new page)';
         } else {
-          hintText = '👆 Click the highlighted element to continue';
+          hintText = 'Click the highlighted control. GuideMe checks the result; Next confirms manually.';
         }
         break;
       case 'type':
@@ -2633,7 +2594,7 @@ class GuideMeContent {
     const isLastStep = this.currentStepIndex === this.currentSteps.length - 1;
     
     // Disable Next button for click/navigation steps - user must click the element
-    const shouldDisableNext = (action === 'click' || action === 'focus') && !isLastStep;
+    const shouldDisableNext = false; // Next is explicit user confirmation when evidence is unavailable.
     
     if (isLastStep) {
       if (this.isFinalStepBatch) {
@@ -2950,8 +2911,12 @@ class GuideMeContent {
   }
 
   prevStep() {
+    this.actionController?.abort();
+    this.pendingAction = null;
+    this.isRevealingTarget = false;
     if (this.currentStepIndex > 0) {
       this.currentStepIndex--;
+      if (this.isSavedGuideReplay) this.originalStepIndex = Math.max(0, this.originalStepIndex - 1);
       this.pendingRetry = null; // Cancel any pending retries
       this.isProcessingClick = false; // Reset click processing so user can click again
       this.highlightStep(this.currentStepIndex);
@@ -2960,293 +2925,39 @@ class GuideMeContent {
     }
   }
 
-  nextStep() {
-    // Prevent rapid successive calls to nextStep
-    const now = Date.now();
-    if (this._lastNextStepTime && (now - this._lastNextStepTime) < 500) {
-      console.log('GuideMe: nextStep() called too rapidly, ignoring');
-      return;
+  showVerificationHint(message) {
+    this.panelPhase = 'attention';
+    this.panelMessage = message;
+    this.updateCompanionUI();
+    const hint = this.controlPanel?.querySelector('.guideme-hint');
+    if (hint) {
+      hint.textContent = message;
+      hint.style.display = 'block';
+      hint.setAttribute('role', 'status');
     }
-    this._lastNextStepTime = now;
-    
-    // For live guides (not replay), track the completed step
-    const completedStep = this.currentSteps[this.currentStepIndex];
-    
-    console.log('GuideMe: nextStep() called, currentStepIndex:', this.currentStepIndex, 'of', this.currentSteps.length);
-    console.log('GuideMe: currentHighlightedElement exists:', !!this.currentHighlightedElement);
-    
-    if (completedStep) {
-      // NOTE: Do NOT increment totalStepsCompleted here!
-      // totalStepsCompleted tracks steps completed on PREVIOUS pages.
-      // It should only be updated when moving to a new page (in saveStateForNavigation).
-      
-      // ALWAYS capture robust selectors here (whether user clicked element or pressed Next)
-      // This ensures selectors are saved even when using the Next button
-      if (!this.isSavedGuideReplay && this.allStepsForSaving) {
-        const alreadyExists = this.allStepsForSaving.some(
-          s => s.description === completedStep.description
-        );
-        
-        console.log('GuideMe: Step already in allStepsForSaving:', alreadyExists);
-        
-        if (!alreadyExists) {
-          // Capture robust selectors from currently highlighted element (if available)
-          let robustSelectors = null;
-          if (this.currentHighlightedElement && document.body.contains(this.currentHighlightedElement)) {
-            robustSelectors = this.generateRobustSelectors(this.currentHighlightedElement);
-            console.log('GuideMe: ✓ Captured selectors via nextStep():', robustSelectors);
-          } else {
-            console.log('GuideMe: ✗ No currentHighlightedElement to capture selectors from!');
-          }
-          
-          this.allStepsForSaving.push({
-            description: completedStep.description,
-            action: completedStep.action || 'click',
-            element: completedStep.element || 'body',
-            robustSelectors: robustSelectors
-          });
-          
-          console.log('GuideMe: Added step to allStepsForSaving, total:', this.allStepsForSaving.length);
-          console.log('GuideMe: Step has robustSelectors:', !!robustSelectors);
-        }
-      }
-    }
-    
+  }
+
+  nextStep(verification = 'manual') {
+    if (!this.isGuideActive || this.isWaitingForAI || !this.currentSteps[this.currentStepIndex]) return;
+    this.actionController?.abort();
+    this.highlightController?.abort();
+    if (this.pendingRetry) clearTimeout(this.pendingRetry);
+    this.pendingRetry = null;
+    this.isRevealingTarget = false;
+    const step = this.currentSteps[this.currentStepIndex];
+    if (['type', 'select'].includes(step.action)) this.lastInteraction = { action: 'edit', elementId: step.element, targetName: step.targetDescriptor?.name || 'the field', at: Date.now(), result: verification === 'verified' ? 'verified' : 'unverified' };
+    this.trackStepCompletion(verification);
+    this.pendingAction = null;
+    this.isProcessingClick = false;
     if (this.currentStepIndex < this.currentSteps.length - 1) {
       this.currentStepIndex++;
-      this.pendingRetry = null; // Cancel any pending retries
-      // Add delay for page content to update after click
-      setTimeout(() => {
-        this.highlightStep(this.currentStepIndex);
-        this.updateControlPanel();
-        this.saveGuideState(); // Save progress
-      }, 300);
-    } else {
-      // All steps on THIS PAGE/BATCH complete
-      // For saved guide replays, just show completion (no AI continuation)
-      if (this.isSavedGuideReplay) {
-        console.log('GuideMe: Saved guide replay complete');
-        this.showFinalCompletion();
-      } else if (this.isFinalStepBatch) {
-        // AI marked this as the final batch - we're done!
-        console.log('GuideMe: Final batch complete - finishing guide');
-        this.showFinalCompletion();
-      } else {
-        // NOT the final batch - request AI continuation for next steps
-        console.log('GuideMe: Batch complete but not final - requesting AI continuation');
-        this.isWaitingForAI = true;
-        this.clearHighlights();
-        this.currentHighlightedElement = null;
-        this.requestGuideContinuation();
-      }
-    }
-  }
-
-  // Detect if we should auto-complete the guide
-  shouldAutoComplete() {
-    // If AI already told us this is the final batch, trust it!
-    if (this.isFinalStepBatch) {
-      console.log('GuideMe: Auto-complete - AI marked this as final batch');
-      return true;
-    }
-    
-    const task = (this.originalTask || '').toLowerCase();
-    
-    // IMPORTANT: Multi-page tasks like "pull request", "fork", "merge" need MORE steps
-    const isComplexMultiPageTask = (
-      task.includes('pull request') || task.includes('pr ') || 
-      task.includes('fork') || task.includes('merge') ||
-      task.includes('branch') || task.includes('compare') ||
-      task.includes('contribute') || task.includes('upstream')
-    );
-    
-    // Simple single-page tasks should complete faster
-    const isSimpleSinglePageTask = (
-      task.includes('clone') || task.includes('copy') ||
-      task.includes('download') || task.includes('find') ||
-      task.includes('show') || task.includes('where') ||
-      task.includes('click') || task.includes('open')
-    );
-    
-    // For simple tasks, complete after just a few steps
-    if (isSimpleSinglePageTask && this.currentSteps.length <= 3) {
-      console.log('GuideMe: Auto-complete - simple single-page task');
-      return true;
-    }
-    
-    // For complex multi-page tasks, be MUCH less aggressive about auto-completing
-    const minStepsForComplex = 10;
-    const minStepsForSimple = 6;
-    
-    // Rule 1: If we've done many steps, consider completion (but higher threshold for complex tasks)
-    const maxSteps = isComplexMultiPageTask ? 25 : 18; // Increased limits
-    if (this.totalStepsCompleted >= maxSteps) {
-      console.log('GuideMe: Auto-complete triggered - max steps reached:', this.totalStepsCompleted);
-      return true;
-    }
-    
-    // Rule 2: Check the CURRENT step we just completed (not the next one)
-    const completedStep = this.currentSteps[this.currentStepIndex];
-    if (completedStep) {
-      const desc = (completedStep.description || '').toLowerCase();
-      
-      // Strong completion keywords - these DEFINITELY end the guide
-      // BUT for multi-page tasks, require being on a confirmation/success page
-      const strongCompletionWords = [
-        'create pull request', 'submit pull request', 'open pull request',
-        'merge pull request', 'confirm merge',
-        'create repository', 'create repo', 'create project', 'create account',
-        'submit form', 'submit request', 'save changes', 'save settings',
-        'finish setup', 'complete registration', 'sign up',
-        'publish', 'send message', 'post comment'
-      ];
-      
-      // For complex tasks, only auto-complete on STRONG matches AND enough steps
-      if (strongCompletionWords.some(phrase => desc.includes(phrase))) {
-        if (isComplexMultiPageTask && this.totalStepsCompleted < minStepsForComplex) {
-          console.log('GuideMe: Complex task - not auto-completing yet, only', this.totalStepsCompleted, 'steps');
-          return false;
-        }
-        console.log('GuideMe: Auto-complete - strong completion action:', desc.substring(0, 60));
-        return true;
-      }
-      
-      // DISABLED medium completion keywords - was causing too many premature completions
-      // Let the AI decide when to complete instead
-    }
-    
-    // Rule 3: DISABLED - "how to" task completion was too aggressive
-    // The AI should guide until it marks completed: true
-    
-    // Rule 4: For informational tasks only (not action tasks)
-    // But require more steps to be sure
-    const isInformational = /^(where is|what is|find|show me where|explain|look for)/i.test(task);
-    if (isInformational && this.totalStepsCompleted >= 7) { // Increased from 5
-      console.log('GuideMe: Auto-complete triggered - informational task with 7+ steps');
-      return true;
-    }
-    
-    // Rule 5: DISABLED completely - was causing too many premature completions
-    // Task word matching in step descriptions is unreliable
-    
-    return false;
-  }
-
-  async requestContinuation() {
-    // Track continuation calls - allow more for complex multi-page tasks
-    this.continuationCount = (this.continuationCount || 0) + 1;
-    const task = (this.originalTask || '').toLowerCase();
-    const isComplexTask = task.includes('pull request') || task.includes('fork') || 
-                          task.includes('contribute') || task.includes('pr ');
-    const maxContinuations = isComplexTask ? 12 : 8;
-    
-    if (this.continuationCount >= maxContinuations) {
-      console.log('GuideMe: Force completing - too many continuation requests (' + this.continuationCount + ')');
+      this.highlightStep(this.currentStepIndex);
+      this.updateControlPanel();
+      this.saveGuideState();
+    } else if (this.isSavedGuideReplay) {
       this.showFinalCompletion();
-      return;
-    }
-    
-    console.log('GuideMe: Continuation request', this.continuationCount, 'of', maxContinuations);
-    
-    // IMPORTANT: Set waiting flag and clear highlights to prevent stale element display
-    this.isWaitingForAI = true;
-    this.clearHighlights();
-    this.currentHighlightedElement = null;
-    
-    // Mark this as a multi-page task since we're continuing
-    this.isMultiPageTask = true;
-    
-    // Ensure control panel exists
-    if (!this.controlPanel || !document.body.contains(this.controlPanel)) {
-      console.log('GuideMe: Recreating control panel...');
-      this.createControlPanel();
-    }
-    
-    // Show loading state
-    if (this.controlPanel) {
-      this.controlPanel.querySelector('.guideme-instruction').textContent = '⏳ Finding next steps...';
-      this.controlPanel.querySelector('.guideme-hint').textContent = '🔄 This is a multi-page task';
-      this.controlPanel.querySelector('.guideme-hint').style.display = 'block';
-      this.controlPanel.querySelector('.guideme-step-number').textContent = `Step ${this.totalStepsCompleted + 1} • Loading...`;
-    }
-
-    try {
-      // Wait for any DOM updates after the click (menus opening, page loading)
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Re-extract DOM with fresh element IDs
-      const dom = this.extractDOM();
-      
-      const response = await chrome.runtime.sendMessage({
-        type: 'CONTINUE_GUIDE',
-        payload: {
-          task: this.originalTask,
-          completedSteps: this.completedSteps,
-          dom: dom,
-          url: window.location.href,
-          title: document.title
-        }
-      });
-
-      console.log('GuideMe: Continuation response:', response);
-
-      if (response.error) {
-        console.error('GuideMe: Continuation error:', response.error);
-        this.isWaitingForAI = false;
-        // Show retry option instead of just stopping
-        this.showRetryOption(response.error);
-        return;
-      }
-
-      // IMPORTANT: Check for steps FIRST before checking completed flag
-      // AI might return completed: true WITH final steps - we need to show those steps!
-      if (response.steps && response.steps.length > 0) {
-        console.log('GuideMe: Got', response.steps.length, 'more steps');
-        this.isWaitingForAI = false; // Ready to highlight new elements
-        this.currentSteps = response.steps;
-        this.currentStepIndex = 0;
-        
-        // If AI marked this as the final batch, remember that
-        this.isFinalStepBatch = response.completed === true;
-        console.log('GuideMe: Is final step batch:', this.isFinalStepBatch);
-        
-        // NOTE: Do NOT pre-add steps to allStepsForSaving here!
-        // Steps should ONLY be added when user completes them (in trackStepCompletion/nextStep)
-        // This ensures we capture actual DOM selectors, not just gm-* IDs
-        console.log('GuideMe: Current allStepsForSaving count:', (this.allStepsForSaving || []).length);
-        
-        // Ensure panel exists before updating
-        if (!this.controlPanel || !document.body.contains(this.controlPanel)) {
-          this.createControlPanel();
-        }
-        
-        // Update UI
-        this.highlightStep(0);
-        this.updateControlPanel();
-        this.saveGuideState();
-        
-        // Show progress if available
-        if (response.progress && this.controlPanel) {
-          const hint = this.controlPanel.querySelector('.guideme-hint');
-          hint.textContent = `📍 ${response.progress}`;
-          hint.style.display = 'block';
-        }
-      } else if (response.completed === true) {
-        // No steps AND marked complete - truly done
-        console.log('GuideMe: Task marked as completed by AI (no more steps)');
-        this.isWaitingForAI = false;
-        this.showFinalCompletion();
-      } else {
-        // No more steps and not marked complete - assume done
-        console.log('GuideMe: No more steps available, assuming complete');
-        this.isWaitingForAI = false;
-        this.showFinalCompletion();
-      }
-    } catch (error) {
-      console.error('GuideMe: Continuation failed:', error);
-      this.isWaitingForAI = false;
-      // Show error with retry option instead of just stopping
-      this.showRetryOption(error.message || 'Connection failed');
+    } else {
+      this.requestGuideContinuation();
     }
   }
 
@@ -3267,50 +2978,64 @@ class GuideMeContent {
     }
   }
 
-  async showFinalCompletion() {
-    console.log('GuideMe: ===== showFinalCompletion CALLED =====');
-    console.log('GuideMe: allStepsForSaving count:', (this.allStepsForSaving || []).length);
-    console.log('GuideMe: guideWasEdited:', this.guideWasEdited);
-    console.log('GuideMe: savedGuideId:', this.savedGuideId);
-    
-    // If edits were made during replay, ensure they're saved one final time
-    if (this.guideWasEdited && this.savedGuideId && this.allOriginalSteps) {
-      console.log('GuideMe: Final save of edited guide before completion');
-      await this.updateSavedGuideInStorage();
-    }
-    
-    // Auto-save the guide BEFORE clearing state (so we don't lose allStepsForSaving!)
-    await this.autoSaveGuideIfEnabled();
-    
-    // Store the count before clearing
-    const totalSteps = (this.allStepsForSaving || []).length;
-    
-    // THEN clear all saved state to prevent re-activation on back navigation
+  async finishGuidance(outcome = {}) {
+    const status = ['complete', 'handoff', 'blocked'].includes(outcome.status) ? outcome.status : 'handoff';
+    const version = ++this.requestVersion;
     this.isGuideActive = false;
-    await this.clearGuideState();
-    try {
-      localStorage.removeItem('guideme_backup');
-    } catch (e) {}
-    console.log('GuideMe: Guide completed - all state cleared');
-    
-    // Show success with stats
-    if (this.controlPanel) {
-      this.controlPanel.querySelector('.guideme-step-number').textContent = '✅ Complete!';
-      this.controlPanel.querySelector('.guideme-instruction').textContent = '🎉 You made it!';
-      this.controlPanel.querySelector('.guideme-hint').textContent = `Completed ${totalSteps} steps • Auto-saved ✓`;
-      this.controlPanel.querySelector('.guideme-hint').style.display = 'block';
-      this.controlPanel.querySelector('.guideme-progress-fill').style.width = '100%';
-      this.controlPanel.querySelector('.guideme-progress-fill').style.animation = 'none';
-      this.controlPanel.querySelector('.guideme-progress-fill').style.background = '#10B981';
-    }
+    this.isPreparingTask = false;
+    this.isWaitingForAI = false;
+    this.isRevealingTarget = false;
+    this.highlightController?.abort();
+    this.removeEventListeners();
+    this.hideContinuationLoading();
     this.clearHighlights();
-    setTimeout(() => this.stopGuide(), 3000);
+    this.removeControlPanel();
+    const last = this.completedSteps.at(-1);
+    const summary = {
+      id: crypto.randomUUID(), status, task: this.originalTask, url: window.location.href,
+      summary: typeof outcome.summary === 'string' && outcome.summary.trim() ? outcome.summary.slice(0, 1400)
+        : last ? `Your action on “${last.targetDescriptor?.name || last.description}” was recorded. Continue from the current page using the instructions for your task.`
+        : 'Guidance has ended here. Review the current page and add more context if you need a specific next action.',
+      remainingActions: Array.isArray(outcome.remainingActions) ? outcome.remainingActions.slice(0, 8).map(action => ({ text: String(typeof action === 'string' ? action : action?.text || '').slice(0, 600) })).filter(action => action.text) : [],
+      completedSteps: this.completedSteps.map(step => ({ description: step.description, verification: step.verification, completedAt: step.completedAt })),
+      finishedAt: Date.now()
+    };
+    this.lastGuideSummary = summary;
+    this.panelPhase = status;
+    this.panelMessage = '';
+    this.currentSteps = [];
+    this.currentStepIndex = 0;
+    this.updateCompanionUI();
+    // Persist the terminal report separately from resumable action checkpoints.
+    await this.clearGuideState();
+    if (version !== this.requestVersion) return;
+    if (this.ownerTabId) await chrome.storage.local.set({ [`guideme_summary_${this.ownerTabId}`]: summary });
+    if (version !== this.requestVersion) {
+      if (this.ownerTabId) {
+        const key = `guideme_summary_${this.ownerTabId}`;
+        if ((await chrome.storage.local.get([key]))[key]?.id === summary.id) await chrome.storage.local.remove([key]);
+      }
+      return;
+    }
+    if (this.guideWasEdited && this.savedGuideId && this.allOriginalSteps) await this.updateSavedGuideInStorage();
+    if (status === 'complete') await this.autoSaveGuideIfEnabled();
+    if (!this.panelOwned && version === this.requestVersion) {
+      this.panelOwned = true;
+      this.startCompanionUpdates();
+      this.updateCompanionUI();
+    }
+  }
+
+  async showFinalCompletion() {
+    return this.finishGuidance({ status: 'handoff', summary: 'Your saved walkthrough is finished. Review the result on the page.' });
   }
 
   async autoSaveGuideIfEnabled() {
+    const version = this.requestVersion;
     try {
       // Check if auto-save is enabled
       const result = await chrome.storage.local.get(['autoSaveGuides']);
+      if (version !== this.requestVersion) return;
       const autoSaveEnabled = result.autoSaveGuides !== false; // Default true
       
       if (!autoSaveEnabled) {
@@ -3369,95 +3094,55 @@ class GuideMeContent {
 
   showCompletionMessage() {
     if (this.controlPanel) {
-      this.controlPanel.querySelector('.guideme-instruction').textContent = '🎉 Guide completed!';
+      this.controlPanel.querySelector('.guideme-instruction').textContent = 'Guide finished. Check that your task is complete.';
       this.controlPanel.querySelector('.guideme-hint').textContent = 'Great job!';
       this.controlPanel.querySelector('.guideme-hint').style.display = 'block';
     }
   }
 
-  highlightStep(stepIndex, retryCount = 0) {
-    // Don't highlight while waiting for AI response
-    if (this.isWaitingForAI) {
-      console.log('GuideMe: Skipping highlight - waiting for AI response');
-      return;
-    }
-    
-    // Always clear highlights first
+  async highlightStep(stepIndex, retryCount = 0) {
+    this.panelPhase = 'locating';
+    this.panelMessage = '';
+    this.isRevealingTarget = false;
+    this.highlightController?.abort();
+    this.highlightController = new AbortController();
+    const { signal } = this.highlightController;
+    if (this.pendingRetry) clearTimeout(this.pendingRetry);
+    this.pendingRetry = null;
+    if (!this.isGuideActive || this.isWaitingForAI || stepIndex !== this.currentStepIndex) return;
     this.clearHighlights();
     this.currentHighlightedElement = null;
-
-    if (!this.currentSteps || stepIndex >= this.currentSteps.length) return;
-    
-    // Check if this is stale (step changed while retrying)
-    if (stepIndex !== this.currentStepIndex) {
-      console.log('GuideMe: Skipping stale highlight attempt for step', stepIndex);
-      return;
-    }
-
     const step = this.currentSteps[stepIndex];
+    if (!step) return;
     const selector = step.element || step.selector || step.originalElement;
     const description = step.description || step.instruction || '';
-    const robustSelectors = step.robustSelectors || null;
-    
-    console.log(`GuideMe: ========== HIGHLIGHTING STEP ${stepIndex + 1}/${this.currentSteps.length} ==========`);
-    console.log(`GuideMe: Description: ${description.substring(0, 80)}...`);
-    console.log('GuideMe: Selector/Element:', selector);
-    console.log('GuideMe: Has robustSelectors:', !!robustSelectors);
-    
-    // Check if page might still be loading
-    const context = this.detectPageContext();
-    if (context.isLoading && retryCount < 2) {
-      console.log('GuideMe: Page appears to be loading, waiting...');
-      this.pendingRetry = setTimeout(() => {
-        if (stepIndex === this.currentStepIndex) {
-          this.highlightStep(stepIndex, retryCount + 1);
-        }
-      }, 1000);
-      return;
-    }
-    
-    if (robustSelectors) {
-      console.log('GuideMe: robustSelectors keys:', Object.keys(robustSelectors));
-      console.log('GuideMe: robustSelectors.textContent:', robustSelectors.textContent);
-      console.log('GuideMe: robustSelectors.tagName:', robustSelectors.tagName);
-      console.log('GuideMe: robustSelectors.cssSelector:', robustSelectors.cssSelector);
-    }
-    
-    // Use both selector AND description AND robust selectors for better element finding
-    const element = this.findElement(selector, description, robustSelectors);
-
+    const element = this.findElement(selector, description, step.robustSelectors, step.targetDescriptor);
     if (!element) {
-      // Retry up to 3 times with increasing delays (for page load timing)
-      if (retryCount < 3) {
-        const delay = (retryCount + 1) * 500; // 500ms, 1000ms, 1500ms
-        console.log(`GuideMe: Element not found, retrying in ${delay}ms (attempt ${retryCount + 1}/3)`);
+      if (retryCount < 3 && this.lastResolution?.status !== 'ambiguous') {
         this.pendingRetry = setTimeout(() => {
-          if (stepIndex === this.currentStepIndex) { // Only retry if still on same step
-            this.highlightStep(stepIndex, retryCount + 1);
-          }
-        }, delay);
-        return;
+          if (!signal.aborted && this.isGuideActive && this.currentSteps[stepIndex] === step) this.highlightStep(stepIndex, retryCount + 1);
+        }, (retryCount + 1) * 400);
+      } else {
+        this.showNotFoundMessage(this.lastResolution?.status === 'ambiguous'
+          ? 'Several controls match this step. Use a more specific guide or confirm the correct control yourself.' : description);
       }
-      console.warn('GuideMe: Could not find element after retries:', step);
-      this.showNotFoundMessage(description);
       return;
     }
-
-    this.currentHighlightedElement = element;
-    console.log('GuideMe: Found element:', this.getElementText(element).substring(0, 30));
-
-    // Check if element is in viewport, if not scroll to it
-    if (!this.isElementInViewport(element)) {
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      // Wait for scroll to complete before highlighting
-      setTimeout(() => {
-        if (stepIndex === this.currentStepIndex) { // Verify still on same step
-          this.createHighlight(element);
-        }
-      }, 500);
-    } else {
-      this.createHighlight(element);
+    this.isRevealingTarget = true;
+    const reachable = await this.pageIntelligence.reveal(element, { signal });
+    if (signal.aborted || !this.isGuideActive || this.currentSteps[this.currentStepIndex] !== step) return;
+    this.isRevealingTarget = false;
+    // Resolve again after layout changes; never highlight a recycled or replaced node.
+    const fresh = this.findElement(selector, description, step.robustSelectors, step.targetDescriptor);
+    if (!reachable || fresh !== element) {
+      this.showNotFoundMessage('This control is hidden, covered, or changed. Reveal it and refresh the guide.');
+      return;
     }
+    this.currentHighlightedElement = element;
+    this.createHighlight(element);
+    this.stepBaseline = this.stepVerifier.capture(step, element);
+    this.panelPhase = 'ready';
+    this.updateCompanionUI();
   }
 
   isElementInViewport(el) {
@@ -3501,10 +3186,13 @@ class GuideMeContent {
   }
 
   showNotFoundMessage(instruction) {
+    this.panelPhase = 'attention';
+    this.panelMessage = instruction || 'This control is not available. Try refreshing the guide.';
+    this.updateCompanionUI();
     // Show a message in the control panel that element wasn't found
     if (this.controlPanel) {
       const hintEl = this.controlPanel.querySelector('.guideme-hint');
-      hintEl.textContent = '⚠️ Element not found';
+      hintEl.textContent = instruction || 'Control not found. Refresh the guide or confirm the step manually.';
       hintEl.style.display = 'block';
       hintEl.style.color = '#dc2626';
       
@@ -3537,8 +3225,14 @@ class GuideMeContent {
       animation: guideme-pulse 1.5s ease-in-out infinite;
     `;
     
+    if (this.panelOwned) {
+      highlight.style.boxShadow = '0 0 0 6px rgba(80,120,93,.12)';
+      highlight.style.borderWidth = '2px';
+      highlight.style.animation = 'none';
+    }
     document.body.appendChild(highlight);
     this.overlayElements.push(highlight);
+    if (this.panelOwned) return;
 
     // Create pulsing ring
     const ring = document.createElement('div');
@@ -3591,207 +3285,14 @@ class GuideMeContent {
   // NEW: ID-based element tracking - no more guessing!
 
   extractDOM() {
-    // Clear old IDs first
-    document.querySelectorAll('[data-guideme-id]').forEach(el => {
-      el.removeAttribute('data-guideme-id');
-    });
-    
-    this.lastExtractedElements = {};
-    const data = {
-      url: window.location.href,
-      title: document.title,
-      elements: [],
-      pageContext: this.detectPageContext() // Add page context for better AI understanding
-    };
-
-    let elementIndex = 0;
-    const seen = new Set();
-    
-    // Helper to add element with ID
-    const addElement = (el, location) => {
-      if (seen.has(el) || !this.isVisible(el)) return;
-      seen.add(el);
-      
-      const text = this.getElementText(el);
-      const ariaLabel = el.getAttribute('aria-label');
-      if (!text && !ariaLabel && el.tagName !== 'INPUT') return;
-      
-      // Assign unique ID
-      const guideId = `gm-${elementIndex++}`;
-      el.setAttribute('data-guideme-id', guideId);
-      
-      // Determine element type
-      let elType = 'link';
-      if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') elType = 'button';
-      else if (el.tagName === 'INPUT') elType = el.type || 'input';
-      else if (el.tagName === 'SELECT') elType = 'dropdown';
-      else if (el.getAttribute('role') === 'menuitem') elType = 'menu-item';
-      else if (el.getAttribute('role') === 'tab') elType = 'tab';
-      else if (el.getAttribute('role') === 'option') elType = 'option';
-      else if (el.getAttribute('role') === 'checkbox') elType = 'checkbox';
-      else if (el.getAttribute('role') === 'switch') elType = 'toggle';
-      
-      // Detect if it's a dropdown/expandable button
-      const hasDropdownIndicator = el.querySelector('svg, .dropdown-caret, .octicon-triangle-down') ||
-                                   el.getAttribute('aria-expanded') !== null ||
-                                   el.getAttribute('aria-haspopup') !== null ||
-                                   el.classList.contains('dropdown-toggle') ||
-                                   el.closest('[data-toggle="dropdown"]') ||
-                                   el.querySelector('[class*="caret"]') ||
-                                   el.querySelector('[class*="arrow"]');
-      
-      // Detect visual prominence (primary action buttons)
-      const style = window.getComputedStyle(el);
-      const bgColor = style.backgroundColor;
-      const isPrimary = bgColor && !bgColor.includes('rgba(0, 0, 0, 0)') && 
-                       !bgColor.includes('transparent') &&
-                       !bgColor.includes('rgb(255, 255, 255)') &&
-                       !bgColor.includes('rgb(0, 0, 0)'); // Also exclude pure black
-      
-      // GitHub-specific: detect green Code button
-      const isGitHubCodeButton = (text && text.toLowerCase().includes('code') && 
-                                  (el.classList.contains('btn-primary') || 
-                                   bgColor.includes('rgb(35, 134, 54)') || // GitHub green
-                                   bgColor.includes('rgb(46, 160, 67)') ||  // GitHub green variant
-                                   bgColor.includes('rgb(31, 136, 61)') ||  // Another green variant
-                                   el.closest('.file-navigation') ||
-                                   el.closest('[class*="file-navigation"]')));
-      
-      // Detect if in a modal/dialog (important for AWS, Stripe, etc.)
-      const isInModal = el.closest('[role="dialog"], [role="alertdialog"], .modal, .dialog, [aria-modal="true"], .overlay');
-      
-      // Build context hints
-      let hints = [];
-      if (hasDropdownIndicator) hints.push('dropdown');
-      if (isPrimary && elType === 'button') hints.push('primary-action');
-      if (isGitHubCodeButton) hints.push('clone-button'); // Specific hint for clone
-      if (el.closest('nav, [role="navigation"], [role="tablist"]')) hints.push('navigation');
-      if (el.closest('form')) hints.push('form');
-      if (isInModal) hints.push('in-modal');
-      if (el.getAttribute('data-testid')) hints.push('testid:' + el.getAttribute('data-testid'));
-      
-      // Detect AWS-specific patterns
-      if (el.closest('[class*="awsui"]')) hints.push('aws-ui');
-      // Detect Figma patterns
-      if (el.closest('[class*="figma"]')) hints.push('figma-ui');
-      // Detect Stripe patterns
-      if (el.closest('[class*="Stripe"], [class*="stripe"]')) hints.push('stripe-ui');
-      
-      // Get nearby context (what's this button near?)
-      const parent = el.closest('div, section, header, aside, main');
-      const nearbyHeading = parent?.querySelector('h1, h2, h3, h4');
-      const nearbyContext = nearbyHeading?.textContent?.trim().substring(0, 30) || '';
-      
-      const elementRecord = {
-        id: guideId,
-        text: (text || ariaLabel || '').substring(0, 60).trim(),
-        type: elType,
-        location: location || 'page',
-        hints: hints.length > 0 ? hints.join(', ') : null,
-        near: nearbyContext || null
-      };
-
-      data.elements.push(elementRecord);
-      this.lastExtractedElements[guideId] = elementRecord;
-    };
-
-    // PRIORITY 0: Modal/Dialog elements (HIGHEST priority - they overlay everything)
-    document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, .dialog, [aria-modal="true"], .overlay-content, .popup-content').forEach(modal => {
-      if (!this.isVisible(modal)) return;
-      modal.querySelectorAll('button, a, [role="button"], input, select, [role="menuitem"], [role="option"]').forEach(el => {
-        addElement(el, 'modal');
-      });
-    });
-
-    // 1. Main content elements (highest priority for actions)
-    document.querySelectorAll('main, [role="main"], .main-content, #content, article').forEach(main => {
-      // Headings for context
-      main.querySelectorAll('h1, h2, h3').forEach(h => {
-        if (seen.has(h)) return;
-        seen.add(h);
-        const text = h.textContent.trim().substring(0, 80);
-        if (text) {
-          data.elements.push({
-            id: `heading-${elementIndex++}`,
-            text: text,
-            type: 'heading',
-            location: 'main'
-          });
-        }
-      });
-      
-      // Interactive elements
-      main.querySelectorAll('a, button, [role="button"], input, select').forEach(el => {
-        addElement(el, 'main');
-      });
-    });
-
-    // 2. Header elements
-    document.querySelectorAll('header, #masthead, [role="banner"]').forEach(header => {
-      header.querySelectorAll('button, a, [role="button"], [role="menuitem"]').forEach(el => {
-        addElement(el, 'header');
-      });
-    });
-
-    // 3. Sidebar/Navigation elements
-    document.querySelectorAll('aside, [role="complementary"], nav, .sidebar, .side-nav, .menu, [aria-label*="menu"], [aria-label*="Menu"], [aria-label*="navigation"], [role="navigation"]').forEach(sidebar => {
-      sidebar.querySelectorAll('a, button, [role="menuitem"], [role="tab"], li a, li button').forEach(el => {
-        addElement(el, 'sidebar');
-      });
-    });
-
-    // 4. Any remaining interactive elements not yet captured
-    const interactiveSelectors = 'a[href], button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], input[type="submit"], input[type="button"]';
-    document.querySelectorAll(interactiveSelectors).forEach(el => {
-      addElement(el, 'page');
-    });
-
-    // 5. Page headings for context
-    document.querySelectorAll('h1, h2').forEach(h => {
-      if (seen.has(h)) return;
-      seen.add(h);
-      const text = h.textContent.trim().substring(0, 80);
-      if (text) {
-        data.elements.push({
-          id: `heading-${elementIndex++}`,
-          text: text,
-          type: 'heading',
-          location: 'page'
-        });
-      }
-    });
-
-    console.log('GuideMe: Extracted', data.elements.length, 'elements with IDs');
-    
-    // Limit to prevent token overflow (expanded to keep main actions)
-    data.elements = data.elements.slice(0, 150);
-    this.lastDomSnapshot = data;
-    return data;
+    const snapshot = this.pageIntelligence.snapshot();
+    this.lastExtractedElements = Object.fromEntries(snapshot.elements.map(element => [element.id, element]));
+    this.lastDomSnapshot = snapshot;
+    return snapshot;
   }
 
-  getElementText(el) {
-    const ariaLabel = el.getAttribute('aria-label');
-    if (ariaLabel) return ariaLabel;
-
-    const title = el.title;
-    if (title) return title;
-
-    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-      if (el.placeholder) return el.placeholder;
-      const label = document.querySelector(`label[for="${el.id}"]`);
-      if (label) return label.textContent.trim();
-    }
-
-    let text = '';
-    el.childNodes.forEach(node => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        text += node.textContent.trim() + ' ';
-      }
-    });
-    text = text.trim();
-
-    if (!text) text = el.textContent.trim();
-    return text;
+  getElementText(element) {
+    return this.pageIntelligence.name(element);
   }
 
   getRelevantClasses(el) {
@@ -3985,16 +3486,10 @@ class GuideMeContent {
     return false;
   }
 
-  isVisible(el) {
-    const rect = el.getBoundingClientRect();
-    const style = window.getComputedStyle(el);
-    const hasSize = rect.width > 0 && rect.height > 0 && el.getClientRects().length > 0;
-    const shown = style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
-    const inFlow = el === document.body || style.position === 'fixed' || el.offsetParent !== null;
-    const notDisabled = !el.disabled && el.getAttribute('aria-disabled') !== 'true';
-    return hasSize && shown && inFlow && notDisabled;
+  isVisible(element) {
+    return this.pageIntelligence.isVisible(element) && this.pageIntelligence.isEnabled(element);
   }
-  
+
   // Generate robust selectors for recording mode - multiple fallback strategies
   generateRobustSelectors(element) {
     const selectors = {};
@@ -4079,6 +3574,13 @@ class GuideMeContent {
       selectors.siblingCount = siblings.length;
     }
     
+    const descriptor = this.pageIntelligence.describe(element);
+    selectors.accessibleName = descriptor.name;
+    selectors.role = descriptor.role;
+    selectors.region = descriptor.region;
+    selectors.context = descriptor.context;
+    selectors.location = descriptor.location;
+
     return selectors;
   }
   
@@ -4126,281 +3628,21 @@ class GuideMeContent {
     return path.join(' > ');
   }
 
-  findElement(selector, text, robustSelectors = null) {
-    console.log('GuideMe: ========== FINDING ELEMENT ==========');
-    console.log('GuideMe: Element ID/selector:', selector);
-    console.log('GuideMe: Description:', text?.substring(0, 60));
-    if (robustSelectors) {
-      console.log('GuideMe: Has robust selectors:', Object.keys(robustSelectors));
-    }
-    
-    // STRATEGY 0: Use robust selectors if available (for saved guide replay)
-    if (robustSelectors) {
-      const found = this.findByRobustSelectors(robustSelectors);
-      if (found) {
-        console.log('GuideMe: ✓ Found by robust selectors');
-        if (selector && selector.startsWith('gm-') && !found.getAttribute('data-guideme-id')) {
-          found.setAttribute('data-guideme-id', selector);
-        }
-        return found;
-      }
-    }
-    
-    // STRATEGY 1: Find by GuideMe ID (most reliable for live guides)
-    // The selector should be the element ID like "gm-15"
-    if (selector && selector.startsWith('gm-')) {
-      const el = document.querySelector(`[data-guideme-id="${selector}"]`);
-      if (el && this.isVisible(el)) {
-        console.log('GuideMe: ✓ Found by ID:', selector);
-        return el;
-      }
-      console.log('GuideMe: ID not found or not visible:', selector);
-    }
-    
-    // For saved guide replays, IDs won't match - use text matching primarily
-    // STRATEGY 2: If selector looks like exact text, find by exact text match
-    if (selector && selector.length > 2 && !selector.startsWith('.') && !selector.startsWith('#') && !selector.startsWith('gm-')) {
-      const exactMatch = this.findByExactText(selector);
-      if (exactMatch) {
-        console.log('GuideMe: ✓ Found by exact text:', selector);
-        return exactMatch;
-      }
-    }
-    
-    // STRATEGY 3: Try CSS selector if it looks like one
-    if (selector && (selector.startsWith('.') || selector.startsWith('#') || selector.startsWith('['))) {
-      try {
-        const el = document.querySelector(selector);
-        if (el && this.isVisible(el)) {
-          console.log('GuideMe: ✓ Found by CSS selector');
-          return el;
-        }
-      } catch (e) {}
-    }
-    
-    // STRATEGY 4: Extract keywords from description and find best match
-    // This is the fallback for saved guides where IDs changed
-    const description = text || '';
-    const keywords = this.extractKeywords(selector + ' ' + description);
-    const meta = selector && this.lastExtractedElements ? this.lastExtractedElements[selector] : null;
-    console.log('GuideMe: Keywords:', keywords, 'meta:', meta);
-    
-    if (keywords.length > 0) {
-      const match = this.findByKeywords(keywords, meta);
-      if (match) {
-        console.log('GuideMe: ✓ Found by keywords:', this.getElementText(match).substring(0, 40));
-        if (selector && selector.startsWith('gm-') && !match.getAttribute('data-guideme-id')) {
-          match.setAttribute('data-guideme-id', selector); // Re-stabilize ID for future steps
-        }
-        return match;
-      }
-    }
-    
-    console.log('GuideMe: ✗ Could not find element');
-    return null;
+  findElement(selector, text, robustSelectors = null, targetDescriptor = null) {
+    const step = this.currentSteps[this.currentStepIndex];
+    const descriptor = targetDescriptor || (step?.element === selector ? step.targetDescriptor : null);
+    this.lastResolution = this.pageIntelligence.resolve({
+      element: selector,
+      description: text,
+      robustSelectors,
+      targetDescriptor: descriptor
+    });
+    return this.lastResolution.element;
   }
 
   // Find element using robust selectors (multiple fallback strategies)
   findByRobustSelectors(selectors) {
-    console.log('GuideMe: findByRobustSelectors called with:', JSON.stringify(selectors, null, 2));
-    console.log('GuideMe: Looking for textContent:', selectors.textContent);
-    console.log('GuideMe: Looking for tagName:', selectors.tagName);
-    
-    // Priority 1: data-testid (most stable)
-    if (selectors.dataTestId) {
-      const el = document.querySelector(`[data-testid="${selectors.dataTestId}"]`) ||
-                 document.querySelector(`[data-test-id="${selectors.dataTestId}"]`);
-      if (el && this.isVisible(el)) {
-        console.log('GuideMe: Found by data-testid');
-        return el;
-      }
-    }
-    
-    // Priority 2: aria-label (semantic, usually stable)
-    if (selectors.ariaLabel) {
-      const el = document.querySelector(`[aria-label="${selectors.ariaLabel}"]`);
-      if (el && this.isVisible(el)) {
-        console.log('GuideMe: Found by aria-label');
-        return el;
-      }
-    }
-    
-    // Priority 3: ID (if not dynamic)
-    if (selectors.id) {
-      const el = document.getElementById(selectors.id);
-      if (el && this.isVisible(el)) {
-        console.log('GuideMe: Found by ID');
-        return el;
-      }
-    }
-    
-    // Priority 4: name attribute
-    if (selectors.name) {
-      const el = document.querySelector(`[name="${selectors.name}"]`);
-      if (el && this.isVisible(el)) {
-        console.log('GuideMe: Found by name');
-        return el;
-      }
-    }
-    
-    // Priority 5: Text content + tag match (BEFORE generic CSS selector!)
-    // This is more reliable than CSS selectors for links/buttons with text
-    if (selectors.textContent && selectors.tagName) {
-      const el = this.findByTextAndTag(selectors.textContent, selectors.tagName);
-      if (el) {
-        console.log('GuideMe: Found by text + tag:', selectors.textContent);
-        return el;
-      }
-    }
-    
-    // Priority 6: Just text content
-    if (selectors.textContent) {
-      const el = this.findByExactText(selectors.textContent);
-      if (el) {
-        console.log('GuideMe: Found by exact text:', selectors.textContent);
-        return el;
-      }
-    }
-    
-    // Priority 7: CSS selector WITH text verification
-    // Only use CSS if we can verify the text matches (to avoid matching wrong element)
-    if (selectors.cssSelector) {
-      try {
-        const el = document.querySelector(selectors.cssSelector);
-        if (el && this.isVisible(el)) {
-          // If we have textContent, verify it matches before returning
-          if (selectors.textContent) {
-            const elText = this.getElementText(el).toLowerCase().trim();
-            const expectedText = selectors.textContent.toLowerCase().trim();
-            if (elText === expectedText || elText.includes(expectedText) || expectedText.includes(elText)) {
-              console.log('GuideMe: Found by CSS (text verified):', selectors.cssSelector);
-              return el;
-            } else {
-              console.log('GuideMe: CSS matched but text mismatch:', elText, 'vs', expectedText);
-              // Don't return - try other methods
-            }
-          } else {
-            // No text to verify, use CSS match
-            console.log('GuideMe: Found by CSS:', selectors.cssSelector);
-            return el;
-          }
-        }
-      } catch (e) {
-        console.log('GuideMe: CSS selector error:', e.message);
-      }
-    }
-    
-    // Priority 8: Keywords from description
-    if (selectors.keywords && selectors.keywords.length > 0) {
-      const el = this.findByKeywords(selectors.keywords);
-      if (el) {
-        console.log('GuideMe: Found by keywords');
-        return el;
-      }
-    }
-    
-    // Priority 9: Try to extract keywords from description (for legacy guides)
-    if (selectors.description) {
-      const extractedKeywords = this.extractKeywordsFromDescription(selectors.description);
-      if (extractedKeywords.length > 0) {
-        const el = this.findByKeywords(extractedKeywords);
-        if (el) {
-          console.log('GuideMe: Found by extracted keywords');
-          return el;
-        }
-      }
-    }
-    
-    // Priority 10: Use textContent as keywords (last fallback)
-    // This handles cases where exact text match failed but keyword matching might work
-    if (selectors.textContent) {
-      const textKeywords = this.extractKeywords(selectors.textContent);
-      console.log('GuideMe: Falling back to textContent as keywords:', textKeywords);
-      if (textKeywords.length > 0) {
-        const el = this.findByKeywords(textKeywords);
-        if (el) {
-          console.log('GuideMe: Found by textContent keywords');
-          return el;
-        }
-      }
-    }
-    
-    console.log('GuideMe: No element found by robust selectors');
-    return null;
-  }
-  
-  // Extract keywords from step description for text-based matching
-  extractKeywordsFromDescription(description) {
-    if (!description) return [];
-    
-    // Extract quoted text first (most specific) - like 'Create repository', "Submit"
-    const quoted = description.match(/'([^']+)'|"([^"]+)"/g);
-    if (quoted) {
-      return quoted.map(q => q.replace(/['\"]/g, '').toLowerCase());
-    }
-    
-    // Extract meaningful words (skip common words)
-    const stopWords = ['the', 'a', 'an', 'to', 'in', 'on', 'for', 'of', 'and', 'or', 'is', 'it', 'this', 'that', 'you', 'your', 'click', 'enter', 'select', 'choose', 'find', 'go', 'once', 'have', 'filled', 'field', 'button'];
-    const words = description.toLowerCase()
-      .replace(/[^\w\s]/g, ' ')
-      .split(/\s+/)
-      .filter(w => w.length > 3 && !stopWords.includes(w));
-    
-    return [...new Set(words)].slice(0, 5);
-  }
-
-  findByTextAndTag(text, tagName) {
-    const normalizedText = text.toLowerCase().trim();
-    const elements = document.querySelectorAll(tagName);
-    
-    console.log('GuideMe: findByTextAndTag searching for:', `"${normalizedText}"`, 'in', elements.length, tagName, 'elements');
-    
-    let exactMatch = null;
-    let containsMatch = null;
-    let allCandidates = []; // Debug: track all potential matches
-    
-    for (const el of elements) {
-      if (!this.isVisible(el)) continue;
-      const elText = this.getElementText(el).toLowerCase().trim();
-      
-      // Track elements with any text similarity for debugging
-      if (elText.includes(normalizedText) || normalizedText.includes(elText) || 
-          elText.split(/\s+/).some(w => normalizedText.includes(w))) {
-        allCandidates.push({ text: elText, tag: el.tagName, href: el.href || '' });
-      }
-      
-      // Priority 1: Exact match (strongest)
-      if (elText === normalizedText) {
-        console.log('GuideMe: findByTextAndTag EXACT match:', `"${elText}"`);
-        return el; // Return immediately on exact match
-      }
-      
-      // Priority 2: Element text equals target (for cases like "Genkit" matching <a>Genkit</a>)
-      // This handles whitespace/formatting differences
-      if (elText.replace(/\s+/g, '') === normalizedText.replace(/\s+/g, '')) {
-        console.log('GuideMe: findByTextAndTag whitespace-normalized match:', `"${elText}"`);
-        exactMatch = el;
-      }
-      
-      // Priority 3: Contains match - but prefer shorter elements (more specific)
-      if (!exactMatch && !containsMatch) {
-        if (elText.includes(normalizedText) || normalizedText.includes(elText)) {
-          // Only accept if lengths are similar (to avoid matching container elements)
-          const lengthRatio = Math.min(elText.length, normalizedText.length) / Math.max(elText.length, normalizedText.length);
-          if (lengthRatio > 0.5) { // At least 50% length similarity
-            console.log('GuideMe: findByTextAndTag contains match:', `"${elText}"`, 'ratio:', lengthRatio.toFixed(2));
-            containsMatch = el;
-          }
-        }
-      }
-    }
-    
-    // Debug: show all candidates we considered
-    if (allCandidates.length > 0) {
-      console.log('GuideMe: findByTextAndTag candidates:', allCandidates.slice(0, 5));
-    }
-    
-    return exactMatch || containsMatch || null;
+    return this.pageIntelligence.resolve({ robustSelectors: selectors }).element;
   }
 
   extractKeywords(text) {
@@ -4413,492 +3655,6 @@ class GuideMeContent {
       .slice(0, 8);
   }
 
-  inferElementLocation(el) {
-    if (!el) return 'page';
-    if (el.closest('[role="dialog"], [aria-modal="true"], .modal, .dialog, .overlay-content, .popup-content')) return 'modal';
-    if (el.closest('main, [role="main"], .main-content, #content, article')) return 'main';
-    if (el.closest('header, #masthead, [role="banner"]')) return 'header';
-    if (el.closest('aside, [role="complementary"], nav, .sidebar, .side-nav, .menu, [role="navigation"]')) return 'sidebar';
-    return 'page';
-  }
-
-  inferElementHints(el) {
-    const hints = new Set();
-    if (!el) return hints;
-    const style = window.getComputedStyle(el);
-    const bgColor = style.backgroundColor;
-    if (bgColor && !bgColor.includes('rgba(0, 0, 0, 0)') && !bgColor.includes('transparent') && !bgColor.includes('rgb(255, 255, 255)')) {
-      if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') {
-        hints.add('primary-action');
-      }
-    }
-    if (el.getAttribute('aria-expanded') !== null || el.getAttribute('aria-haspopup') !== null) {
-      hints.add('dropdown');
-    }
-    if (el.closest('form')) hints.add('form');
-    if (el.getAttribute('data-testid')) hints.add('testid:' + el.getAttribute('data-testid'));
-    if (el.closest('nav, [role="navigation"], [role="tablist"]')) hints.add('navigation');
-    if (el.closest('[role="dialog"], [aria-modal="true"], .modal, .dialog')) hints.add('in-modal');
-    return hints;
-  }
-
-  findByKeywords(keywords, meta = null) {
-    // First try elements with data-guideme-id (current session elements)
-    let elements = document.querySelectorAll('[data-guideme-id]');
-    
-    // If no guideme elements (e.g., imported guide replay), search all clickable elements
-    if (elements.length === 0) {
-      elements = document.querySelectorAll('a, button, input, select, [role="button"], [role="link"], [role="menuitem"], [onclick], [data-action]');
-    }
-    
-    console.log('GuideMe: findByKeywords searching', elements.length, 'elements for keywords:', keywords, 'meta:', meta);
-    
-    let bestMatch = null;
-    let bestScore = 0;
-    let allCandidates = []; // For debugging
-    
-    for (const el of elements) {
-      if (!this.isVisible(el)) continue;
-      
-      const elText = this.getElementText(el).toLowerCase();
-      const elWords = elText.split(/\s+/);
-      
-      let score = 0;
-      let matchedKeywords = [];
-      
-      for (const kw of keywords) {
-        // Exact word match - HIGHEST priority
-        if (elWords.includes(kw)) {
-          score += 30; // Increased from 25
-          matchedKeywords.push(kw);
-        }
-        // Full text contains keyword as word
-        else if (elText.includes(kw + ' ') || elText.includes(' ' + kw) || elText === kw || elText.startsWith(kw) || elText.endsWith(kw)) {
-          score += 25;
-          matchedKeywords.push('[' + kw + ']');
-        }
-        // Word contains keyword
-        else if (elWords.some(w => w.includes(kw) && kw.length > 3)) {
-          score += 15;
-          matchedKeywords.push(kw + '*');
-        }
-        // Keyword contains word (e.g., "budgets" matches "budget")
-        else if (elWords.some(w => kw.includes(w) && w.length > 3)) {
-          score += 10;
-          matchedKeywords.push('*' + kw);
-        }
-      }
-      
-      const candidateLocation = this.inferElementLocation(el);
-      const candidateHints = this.inferElementHints(el);
-
-      // Bonus for matching more keywords
-      if (matchedKeywords.length > 1) {
-        score += matchedKeywords.length * 10;
-      }
-      
-      // Strong bonus for SHORT text that matches well (more likely to be a button, not container)
-      if (elText.length <= 30 && score > 0) {
-        score += 15;
-      }
-      
-      // Penalty for very long text (probably a container, not a button)
-      if (elText.length > 50) {
-        score -= 10;
-      }
-      if (elText.length > 100) {
-        score -= 20; // Extra penalty for very long text
-      }
-
-      // Location alignment with the originally extracted element
-      if (meta?.location && meta.location === candidateLocation) {
-        score += 25;
-      } else if (meta?.location && candidateLocation === 'main' && meta.location === 'page') {
-        score += 10; // Prefer main over generic page when uncertain
-      }
-
-      // Hint alignment (e.g., primary-action, dropdown)
-      if (meta?.hints) {
-        meta.hints.split(',').map(h => h.trim()).forEach(h => {
-          if (candidateHints.has(h)) {
-            score += 12;
-          }
-        });
-      }
-
-      // Nearby heading/context alignment
-      if (meta?.near) {
-        const nearbyHeading = el.closest('div, section, header, aside, main')?.querySelector('h1, h2, h3, h4');
-        const headingText = nearbyHeading?.textContent?.trim().toLowerCase();
-        if (headingText && headingText.includes(meta.near.toLowerCase())) {
-          score += 12;
-        }
-      }
-      
-      if (score > 0) {
-        allCandidates.push({ el, text: elText.substring(0, 50), score, matchedKeywords });
-      }
-      
-      if (score > bestScore && score >= 20) {
-        bestScore = score;
-        bestMatch = el;
-      }
-    }
-    
-    // Log top candidates for debugging
-    allCandidates.sort((a, b) => b.score - a.score);
-    console.log('GuideMe: findByKeywords top candidates:', allCandidates.slice(0, 5).map(c => ({ text: c.text, score: c.score, matched: c.matchedKeywords })));
-    
-    if (bestMatch) {
-      console.log('GuideMe: findByKeywords best match:', this.getElementText(bestMatch).substring(0, 50), 'score:', bestScore);
-    }
-    
-    return bestMatch;
-  }
-
-  extractSearchTerms(selector, text) {
-    const terms = new Set();
-    const combined = `${selector || ''} ${text || ''}`;
-    
-    // Extract quoted strings
-    const quoted = combined.match(/['"]([^'"]+)['"]/g);
-    if (quoted) {
-      quoted.forEach(q => terms.add(q.replace(/['"]/g, '').trim()));
-    }
-    
-    // Extract key phrases after common words
-    const patterns = [
-      /click\s+(?:the\s+)?['"]?([^'"]+?)['"]?\s*(?:button|link|tab|option|menu)?/gi,
-      /find\s+(?:the\s+)?['"]?([^'"]+?)['"]?/gi,
-      /look\s+for\s+['"]?([^'"]+?)['"]?/gi,
-      /(?:button|link|tab)\s+(?:called|named|labeled)\s+['"]?([^'"]+?)['"]?/gi,
-    ];
-    
-    patterns.forEach(pattern => {
-      let match;
-      while ((match = pattern.exec(combined)) !== null) {
-        if (match[1] && match[1].length > 2) {
-          terms.add(match[1].trim());
-        }
-      }
-    });
-    
-    // Add the whole selector if it looks like a description
-    if (selector && !selector.startsWith('[') && !selector.startsWith('#') && !selector.startsWith('.')) {
-      const cleaned = selector
-        .replace(/^(click|tap|select|find|look for|locate|on the|in the)\s+/gi, '')
-        .replace(/\s+(button|link|tab|option|in the sidebar|in the menu|in navigation)$/gi, '')
-        .replace(/['"`]/g, '')
-        .trim();
-      if (cleaned.length > 2) terms.add(cleaned);
-    }
-    
-    // Extract important context nouns from the full text
-    const contextNouns = combined.match(/\b(budget|budgets|alert|alerts|billing|profile|account|repository|repositories|project|projects|package|packages|action|actions|codespace|codespaces|license|licensing|payment|usage|overview|settings|notifications)\b/gi);
-    if (contextNouns) {
-      contextNouns.forEach(noun => terms.add(noun.toLowerCase()));
-    }
-    
-    // Add synonym variations
-    const synonyms = {
-      'create': ['new', 'add', 'create'],
-      'new': ['create', 'add', 'new'],
-      'add': ['create', 'new', 'add'],
-      'delete': ['remove', 'delete'],
-      'remove': ['delete', 'remove'],
-      'edit': ['modify', 'change', 'update', 'edit'],
-      'settings': ['preferences', 'options', 'settings'],
-      'budget': ['budgets', 'budget'],
-      'budgets': ['budget', 'budgets'],
-      'alert': ['alerts', 'alert', 'notification', 'notifications'],
-      'alerts': ['alert', 'alerts', 'notification', 'notifications']
-    };
-    
-    const termsArray = Array.from(terms);
-    termsArray.forEach(term => {
-      const words = term.toLowerCase().split(/\s+/);
-      words.forEach(word => {
-        if (synonyms[word]) {
-          // Add variations with synonyms
-          synonyms[word].forEach(syn => {
-            const variant = term.toLowerCase().replace(word, syn);
-            terms.add(variant);
-          });
-        }
-      });
-    });
-    
-    const result = Array.from(terms).filter(t => t.length > 1);
-    console.log('GuideMe: Extracted search terms:', result);
-    return result;
-  }
-
-  tryDirectSelector(selector) {
-    try {
-      // Clean up selector - remove :contains() which isn't real CSS
-      let cleanSelector = selector;
-      if (selector.includes(':contains(')) {
-        const match = selector.match(/^([^:]+):contains\("([^"]+)"\)$/);
-        if (match) {
-          const [, tag, searchText] = match;
-          const elements = document.querySelectorAll(tag);
-          for (const el of elements) {
-            if (el.textContent.trim().toLowerCase().includes(searchText.toLowerCase()) && this.isVisible(el)) {
-              console.log('GuideMe: Found via :contains()');
-              return el;
-            }
-          }
-        }
-        return null;
-      }
-      
-      // Try direct selector
-      if (!cleanSelector.includes(' with ')) {
-        const el = document.querySelector(cleanSelector);
-        if (el && this.isVisible(el)) {
-          console.log('GuideMe: Found via direct selector');
-          return el;
-        }
-      }
-    } catch (e) {
-      // Invalid selector, continue to other methods
-    }
-    return null;
-  }
-
-  findByExactText(searchText) {
-    if (!searchText || searchText.length < 2) return null;
-    const lower = searchText.toLowerCase().trim();
-    const normalized = lower.replace(/\s+/g, ' '); // Normalize multiple whitespace to single space
-    
-    console.log('GuideMe: findByExactText searching for:', lower);
-    
-    // Search all interactive elements first (higher priority)
-    const interactiveElements = document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="option"], li a, li button');
-    
-    // Pass 1: Exact text match on interactive elements
-    for (const el of interactiveElements) {
-      if (!this.isVisible(el)) continue;
-      
-      const elText = this.getElementText(el).toLowerCase().trim();
-      const elNormalized = elText.replace(/\s+/g, ' ');
-      
-      // Exact match (case insensitive)
-      if (elText === lower || elNormalized === normalized) {
-        console.log('GuideMe: EXACT match found! Looking for:', lower, '-> Found:', elText);
-        return el;
-      }
-    }
-    
-    // Pass 2: Check aria-labels on interactive elements
-    for (const el of interactiveElements) {
-      if (!this.isVisible(el)) continue;
-      const ariaLabel = el.getAttribute('aria-label');
-      if (ariaLabel && ariaLabel.toLowerCase().trim() === lower) {
-        console.log('GuideMe: EXACT aria-label match:', lower);
-        return el;
-      }
-    }
-    
-    // Pass 3: Check non-interactive elements (spans, divs) that might be clickable
-    const otherElements = document.querySelectorAll('span, div, label, li');
-    for (const el of otherElements) {
-      if (!this.isVisible(el)) continue;
-      
-      const elText = this.getElementText(el).toLowerCase().trim();
-      if (elText === lower) {
-        // Check if this element or a close parent is clickable
-        const clickable = el.closest('a, button, [role="button"], [role="menuitem"], [onclick]');
-        if (clickable) {
-          console.log('GuideMe: Found text in clickable parent:', lower);
-          return clickable;
-        }
-        // Return the element anyway if exact match
-        console.log('GuideMe: Found exact text (not explicitly clickable):', lower);
-        return el;
-      }
-    }
-    
-    // No exact match found - log some candidates for debugging
-    console.log('GuideMe: No exact match for:', lower);
-    
-    return null;
-  }
-
-  findByPartialText(searchText) {
-    if (!searchText || searchText.length < 2) return null;
-    const lower = searchText.toLowerCase().trim();
-    
-    // Search all interactive elements first
-    const interactiveElements = document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="option"], input[type="submit"], input[type="button"]');
-    
-    for (const el of interactiveElements) {
-      if (!this.isVisible(el)) continue;
-      
-      const elText = this.getElementText(el).toLowerCase();
-      const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-      
-      // Check if search term is contained
-      if (elText.includes(lower) || ariaLabel.includes(lower)) {
-        console.log('GuideMe: Found partial text match:', searchText);
-        return el;
-      }
-    }
-    
-    // Then try other elements (li, span, div that might be clickable)
-    const otherElements = document.querySelectorAll('li, span, div, label');
-    for (const el of otherElements) {
-      if (!this.isVisible(el)) continue;
-      
-      // Only consider if it has a click handler or is inside a clickable
-      const hasClickHandler = el.onclick || el.getAttribute('onclick') || el.closest('a, button, [role="button"]');
-      if (!hasClickHandler) continue;
-      
-      const elText = this.getElementText(el).toLowerCase();
-      if (elText.includes(lower)) {
-        console.log('GuideMe: Found partial text in clickable container:', searchText);
-        return el;
-      }
-    }
-    
-    return null;
-  }
-
-  findBestMatch(searchTerms) {
-    if (!searchTerms || searchTerms.length === 0) return null;
-    
-    // Get all clickable elements
-    const allElements = document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="option"], input[type="submit"], input[type="button"]');
-    
-    let bestElement = null;
-    let bestScore = 0;
-    
-    // Extract important context words from search terms (nouns, specific terms)
-    const contextWords = new Set();
-    const actionWords = ['create', 'new', 'add', 'delete', 'remove', 'edit', 'save', 'submit', 'update', 'click', 'open', 'view'];
-    
-    searchTerms.forEach(term => {
-      term.toLowerCase().split(/\s+/).forEach(word => {
-        if (word.length > 3 && !actionWords.includes(word)) {
-          contextWords.add(word);
-        }
-      });
-    });
-    
-    console.log('GuideMe: Context words:', Array.from(contextWords));
-    
-    // Check if search terms suggest an action button
-    const isActionSearch = searchTerms.some(term => 
-      actionWords.some(action => term.toLowerCase().includes(action))
-    );
-    
-    for (const el of allElements) {
-      if (!this.isVisible(el)) continue;
-      
-      const elText = this.getElementText(el).toLowerCase().trim();
-      const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-      const combinedText = `${elText} ${ariaLabel}`;
-      
-      // Skip very short or empty text
-      if (elText.length < 2 && ariaLabel.length < 2) continue;
-      
-      let score = 0;
-      let hasContextMatch = false;
-      
-      // First, check if element contains important context words
-      for (const contextWord of contextWords) {
-        if (combinedText.includes(contextWord)) {
-          score += 50; // High bonus for context match
-          hasContextMatch = true;
-        }
-      }
-      
-      for (const term of searchTerms) {
-        const lower = term.toLowerCase();
-        
-        // Exact match = highest score
-        if (elText === lower || ariaLabel === lower) {
-          score += 100;
-        }
-        // Starts with = high score
-        else if (elText.startsWith(lower) || ariaLabel.startsWith(lower)) {
-          score += 60;
-        }
-        // Element text starts with a word from search term
-        else if (lower.split(/\s+/).some(word => elText.startsWith(word) && word.length > 3)) {
-          score += 30;
-        }
-        // Contains full term
-        else if (combinedText.includes(lower)) {
-          score += 25;
-        }
-        // Word overlap (but require context word to be present)
-        else {
-          const termWords = lower.split(/\s+/).filter(w => w.length > 2);
-          const textWords = combinedText.split(/\s+/);
-          const overlap = termWords.filter(tw => 
-            textWords.some(ew => ew === tw || (ew.includes(tw) && tw.length > 3))
-          );
-          // Only count action word matches if context word is also present
-          const actionOnlyMatch = overlap.every(w => actionWords.includes(w));
-          if (!actionOnlyMatch || hasContextMatch) {
-            score += overlap.length * 10;
-          }
-        }
-      }
-      
-      // Location-based scoring
-      const inHeader = el.closest('header, [role="banner"], #masthead, .Header');
-      const inSidebar = el.closest('aside, nav, .sidebar, .menu, [role="navigation"], [role="complementary"]');
-      const inMainContent = el.closest('main, [role="main"], .main-content, #content, article, .container');
-      const isButton = el.tagName === 'BUTTON' || el.getAttribute('role') === 'button';
-      
-      if (isActionSearch && hasContextMatch) {
-        // For action buttons with context, strongly prefer main content
-        if (inMainContent && isButton) {
-          score += 30;
-        }
-        if (inHeader) {
-          score -= 30; // Penalize header buttons when we have context
-        }
-      } else if (isActionSearch) {
-        // Action without context - slightly prefer main content
-        if (inMainContent && isButton) {
-          score += 10;
-        }
-        if (inSidebar) {
-          score -= 10;
-        }
-      }
-      
-      // Penalize very generic/short button text
-      if (elText.length < 15 && !hasContextMatch) {
-        const genericStarts = ['create', 'new', 'add', 'edit', 'delete', 'more', 'menu', 'open'];
-        if (genericStarts.some(g => elText.startsWith(g)) && !contextWords.size === 0) {
-          score -= 25; // Penalize generic buttons without context match
-        }
-      }
-      
-      // Penalize very generic navigation items
-      const genericTerms = ['settings', 'home', 'back', 'menu', 'more', 'options'];
-      if (genericTerms.includes(elText) && !searchTerms.some(t => t.toLowerCase() === elText)) {
-        score -= 20;
-      }
-      
-      if (score > bestScore) {
-        bestScore = score;
-        bestElement = el;
-        console.log(`GuideMe: Candidate "${elText}" score: ${score} (context: ${hasContextMatch})`);
-      }
-    }
-    
-    if (bestElement && bestScore >= 20) {
-      console.log('GuideMe: Best match:', this.getElementText(bestElement), 'score:', bestScore);
-      return bestElement;
-    }
-    
-    return null;
-  }
 }
 
 // Initialize content script
