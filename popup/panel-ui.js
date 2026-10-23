@@ -122,6 +122,10 @@
         }
         this.doc.getElementById('summaryHistory')?.classList.toggle('hidden', !count);
         this.text('summaryHistoryLabel', `${count} recorded action${count === 1 ? '' : 's'}`);
+        this.text('summarySaveStatus', report.save?.message || '');
+        const saveButton = this.doc.getElementById('saveSessionBtn');
+        saveButton?.classList.toggle('hidden', !['error', 'disabled'].includes(report.save?.state));
+        if (saveButton) saveButton.textContent = report.save?.state === 'disabled' ? 'Save guided steps' : 'Retry saving';
         this.doc.getElementById('resumeGuideBtn')?.classList.toggle('hidden', status === 'complete');
       }
     }

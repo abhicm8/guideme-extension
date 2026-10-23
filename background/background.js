@@ -12,6 +12,7 @@ const aiConfig = globalThis.GuideMeAIConfig;
 class GuideMeBackground {
   constructor() {
     this.geminiClient = new GeminiClient();
+    this.macroSaveQueue = Promise.resolve();
     this.init();
   }
 
@@ -28,12 +29,29 @@ class GuideMeBackground {
       
       if (message.type === 'CONTINUE_GUIDE') {
         this.continueGuide(message.payload)
+          .then(async result => {
+            if (sender.tab && message.payload.sessionId) {
+              try { await this.panelController.history.advice(message.payload.sessionId, sender.tab.id, result, message.payload.url); }
+              catch (error) { result.historyError = error.message; }
+            }
+            return result;
+          })
           .then(result => sendResponse(result))
           .catch(error => sendResponse({ error: error.message }));
         return true;
       }
 
       // Macro Management
+      if (message.type === 'SAVE_HISTORY_WALKTHROUGH') {
+        this.panelController.history.get(message.sessionId).then(session => {
+          if (!session) throw new Error('This history session is no longer available.');
+          const steps = session.events.filter(event => event.type === 'action').map(event => event.step);
+          return this.saveMacro({ name: session.task, task: session.task, steps, startUrl: session.startUrl,
+            sourceSessionId: session.id, outcome: { status: session.status, finishedAt: session.updatedAt },
+            isRecorded: session.events.some(event => event.source === 'recorded') });
+        }).then(sendResponse).catch(error => sendResponse({ error: error.message }));
+        return true;
+      }
       if (message.type === 'SAVE_MACRO') {
         this.saveMacro(message.payload)
           .then(result => sendResponse(result))
@@ -87,8 +105,16 @@ class GuideMeBackground {
   }
 
   // ============ MACRO MANAGEMENT ============
-  async saveMacro(payload) {
-    const { name, steps, startUrl, task, category, isRecorded } = payload;
+  saveMacro(payload) {
+    // Two tabs may finish together. Serialize read/modify/write so neither save is lost.
+    const operation = this.macroSaveQueue.then(() => this.persistMacro(payload));
+    this.macroSaveQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  async persistMacro(payload) {
+    const { name, steps, startUrl, task, category, isRecorded, sourceSessionId, outcome } = payload;
+    if (!Array.isArray(steps) || !steps.length) throw new Error('No recorded steps to save.');
     
     console.log('GuideMe BG: saveMacro called with', steps?.length, 'steps', isRecorded ? '(recorded)' : '(AI-generated)');
     steps?.forEach((step, i) => {
@@ -100,20 +126,27 @@ class GuideMeBackground {
     });
     
     const macros = await this.getMacros();
+    const existingIndex = sourceSessionId ? macros.findIndex(guide => guide.sourceSessionId === sourceSessionId) : -1;
+    const existing = macros[existingIndex];
+    // A delayed retry from an earlier handoff cannot truncate a resumed session.
+    if (existing && (existing.steps.length > steps.length || existing.outcome?.finishedAt > outcome?.finishedAt)) return { success: true, macro: existing };
     
     const macro = {
-      id: `macro_${Date.now()}`,
-      name: name,
+      ...existing,
+      id: existing?.id || `macro_${crypto.randomUUID()}`,
+      name: existing?.name || name,
       task: task,
       steps: steps,
       startUrl: startUrl,
       startUrlPattern: new URL(startUrl).hostname,
-      category: category || 'other',
+      category: existing?.category || category || 'other',
       isRecorded: isRecorded || false,
-      createdAt: Date.now()
+      createdAt: existing?.createdAt || Date.now(),
+      ...(sourceSessionId ? { sourceSessionId, outcome, updatedAt: Date.now() } : {})
     };
     
-    macros.push(macro);
+    if (existingIndex === -1) macros.push(macro);
+    else macros[existingIndex] = macro;
     await chrome.storage.local.set({ guideme_macros: macros });
     
     return { success: true, macro };

@@ -19,6 +19,10 @@ class GuideMeContent {
     this.guideWasEdited = false; // Track if any edits were made during replay
     this.isFinalStepBatch = false; // Flag when AI says this is the last batch
     this.allStepsForSaving = []; // Store ALL steps for auto-save
+    this.guideSessionId = null;
+    this.guideStartUrl = '';
+    this.guideSaves = new Map();
+    this.historyError = null;
     this.allOriginalSteps = null; // All original steps for saved guide replay
     this.originalStepIndex = 0; // Position in original steps (for multi-page)
     this.visitedUrls = []; // Track visited URLs to detect back navigation
@@ -78,6 +82,9 @@ class GuideMeContent {
     this.recordingClickHandler = null;
     this.recordingInputHandler = null;
     this.recordingOverlay = null;
+    this.recordingOwnerTabId = null;
+    this.recordingSessionId = null;
+    this.recordingPaused = false;
     
     this.init();
   }
@@ -199,7 +206,8 @@ class GuideMeContent {
     this.lastUrl = newUrl;
 
     // Only continue if we have an active guide
-    if (!this.isGuideActive && !this.originalTask) {
+    if (!this.isGuideActive) {
+      this.logSessionEvent({ type: 'page', url: newUrl, text: document.title }, this.guideSessionId || this.recordingSessionId);
       // No active guide - don't auto-resume on navigation
       // User must explicitly start a new guide
       console.log('GuideMe: No active guide, ignoring navigation');
@@ -227,6 +235,7 @@ class GuideMeContent {
     try { this.ownerTabId = (await chrome.runtime.sendMessage({ type: 'GET_GUIDEME_TAB_ID' })).tabId || null; } catch {}
     if (version !== this.requestVersion) return;
     if (this.ownerTabId) {
+      chrome.runtime.sendMessage({ type: 'SESSION_PAGE_LOADED', url: location.href }).catch(() => {});
       try {
         const key = `guideme_summary_${this.ownerTabId}`;
         const summary = (await chrome.storage.local.get([key]))[key];
@@ -235,9 +244,15 @@ class GuideMeContent {
           this.lastGuideSummary = summary;
           this.originalTask = summary.task;
           this.completedSteps = summary.completedSteps || [];
+          this.guideSessionId = summary.journey?.id || null;
+          this.guideStartUrl = summary.journey?.startUrl || '';
+          this.allStepsForSaving = summary.journey?.steps || [];
+          this.isSavedGuideReplay = summary.journey?.isSavedGuideReplay || false;
           this.panelOwned = true;
           this.panelPhase = summary.status || 'handoff';
           this.startCompanionUpdates();
+          // Resume an interrupted save using the same session ID, never another copy.
+          if (summary.journey && ['saving', 'error'].includes(summary.save?.state)) this.autoSaveGuideIfEnabled(summary);
           return;
         }
       } catch {}
@@ -342,6 +357,8 @@ class GuideMeContent {
       this.savedGuideId = guideState.savedGuideId || null; // Restore guide ID for editing!
       this.guideWasEdited = guideState.guideWasEdited || false; // Restore edit tracking
       this.allStepsForSaving = guideState.allStepsForSaving || [];
+      this.guideSessionId = guideState.guideSessionId || crypto.randomUUID();
+      this.guideStartUrl = guideState.guideStartUrl || this.allStepsForSaving[0]?.pageUrl || guideState.pageUrl;
       this.visitedUrls = guideState.visitedUrls || [];
       
       // Restore full step list for recorded/saved guides
@@ -426,7 +443,18 @@ class GuideMeContent {
       resultUrl: window.location.href
     };
     this.completedSteps.push(captured);
-    if (!this.isSavedGuideReplay) this.allStepsForSaving.push(captured);
+    if (!this.isSavedGuideReplay) {
+      this.allStepsForSaving.push(captured);
+      this.logSessionEvent({ id: `${this.guideSessionId}:action:${captured.completedAt}:${this.allStepsForSaving.length}`, type: 'action', source: 'guided', url: captured.pageUrl, step: captured });
+    }
+  }
+
+  async logSessionEvent(event, sessionId = this.guideSessionId) {
+    if (!sessionId) return;
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'SESSION_EVENT', sessionId, event });
+      if (result?.error) throw new Error(result.error);
+    } catch { this.historyError = 'History could not be saved. Your current guide is still available.'; }
   }
 
   async saveStateForNavigation() {
@@ -470,6 +498,7 @@ class GuideMeContent {
       const response = await chrome.runtime.sendMessage({
         type: 'CONTINUE_GUIDE',
         payload: {
+          sessionId: this.guideSessionId,
           task: this.originalTask,
           completedSteps: this.completedSteps,
           guidancePreference: this.guidancePreference,
@@ -487,6 +516,7 @@ class GuideMeContent {
         error: response.error
       });
       
+      if (response.historyError) this.historyError = 'History could not be saved.';
       if (response.error) {
         console.error('GuideMe: Continuation failed:', response.error);
         this.isWaitingForAI = false; // Clear flag on error
@@ -918,6 +948,8 @@ class GuideMeContent {
     const pending = this.pendingAction;
     const guideState = {
       task: this.originalTask,
+      guideSessionId: this.guideSessionId,
+      guideStartUrl: this.guideStartUrl,
       steps: this.currentSteps,
       currentStepIndex: this.currentStepIndex,
       highlightColor: this.highlightColor,
@@ -993,7 +1025,10 @@ class GuideMeContent {
         this.panelPhase = 'planning';
         this.lastGuideSummary = null;
         this.originalTask = message.task;
-        this.guidancePreference = 'auto';
+        this.guideSessionId = message.sessionId || crypto.randomUUID();
+        this.historyError = message.historyError ? 'History could not be saved.' : null;
+        this.guideStartUrl = window.location.href;
+        this.guidancePreference = message.guidancePreference || 'auto';
         this.startCompanionUpdates();
         this.updateCompanionUI();
         sendResponse({ success: true });
@@ -1011,6 +1046,13 @@ class GuideMeContent {
         this.panelOwned = true;
         this.ownerTabId ||= message.payload.tabId || null;
         this.originalTask = message.payload.task || this.originalTask;
+        this.guideSessionId = message.payload.sessionId || this.guideSessionId;
+        this.guideStartUrl = message.payload.startUrl || this.guideStartUrl;
+        if (message.payload.completedSteps) {
+          this.completedSteps = message.payload.completedSteps;
+          this.allStepsForSaving = structuredClone(message.payload.completedSteps);
+        }
+        this.historyError = message.payload.historyError ? 'History could not be saved.' : this.historyError;
         this.finishGuidance(message.payload).then(() => sendResponse({ success: true })).catch(error => sendResponse({ error: error.message }));
         break;
 
@@ -1019,6 +1061,11 @@ class GuideMeContent {
         this.panelPhase = 'idle';
         if (this.ownerTabId) chrome.storage.local.remove([`guideme_summary_${this.ownerTabId}`]).catch(() => {});
         sendResponse({ success: true });
+        break;
+
+      case 'SAVE_GUIDE_SESSION':
+        this.autoSaveGuideIfEnabled(this.lastGuideSummary, true)
+          .then(result => sendResponse(result)).catch(error => sendResponse({ error: error.message }));
         break;
 
       case 'REFRESH_GUIDE':
@@ -1043,12 +1090,15 @@ class GuideMeContent {
         this.isWaitingForAI = false;
         this.isRevealingTarget = false;
         this.completedStepObjects = new WeakSet();
-        this.completedSteps = [];
+        this.completedSteps = structuredClone(message.payload.completedSteps || []);
         this.totalStepsCompleted = 0;
         this.currentSteps = message.payload.steps;
         this.highlightColor = message.payload.highlightColor || '#4F46E5';
         this.currentStepIndex = 0;
         this.originalTask = message.payload.task || '';
+        this.guideSessionId = message.payload.sessionId || crypto.randomUUID();
+        this.guideStartUrl = message.payload.startUrl || window.location.href;
+        this.historyError = message.payload.historyError ? 'History could not be saved.' : null;
         this.isSavedGuideReplay = message.payload.isMacro || message.payload.isSavedGuide || false;
         this.isRecordedGuide = message.payload.isRecorded || false;
         this.savedGuideId = message.payload.guideId || null; // Store guide ID for editing
@@ -1076,10 +1126,9 @@ class GuideMeContent {
           this.originalStepIndex = 0;
         }
         
-        // IMPORTANT: Start with EMPTY allStepsForSaving
-        // Steps will be added WITH robust selectors as user completes them
-        // This ensures we capture actual DOM selectors, not just gm-* IDs
-        this.allStepsForSaving = [];
+        // Explicit session continuation retains earlier performed steps and their captured selectors.
+        // A new task starts empty; model suggestions are never added as performed actions.
+        this.allStepsForSaving = structuredClone(message.payload.completedSteps || []);
         
         console.log('GuideMe: Starting guide with', this.currentSteps.length, 'steps');
         console.log('GuideMe: Is saved guide replay:', this.isSavedGuideReplay);
@@ -1215,9 +1264,11 @@ class GuideMeContent {
         sendResponse({
           task: this.originalTask,
           activity: this.getPanelActivity(),
+          sessionId: this.guideSessionId,
+          historyError: this.historyError,
           completedSteps: this.completedSteps.map(step => ({ description: step.description, verification: step.verification, completedAt: step.completedAt })),
           lastInteraction: this.lastInteraction,
-          lastGuideSummary: this.lastGuideSummary,
+          lastGuideSummary: this.lastGuideSummary ? { ...this.lastGuideSummary, journey: undefined } : null,
           formContext: this.getFormContext(),
           pageStats: this.lastDomSnapshot ? { elements: this.lastDomSnapshot.elements.length, truncated: this.lastDomSnapshot.truncated } : null,
           isGuideActive: this.isGuideActive,
@@ -1236,31 +1287,30 @@ class GuideMeContent {
       
       // ========== RECORDING MODE MESSAGES ==========
       case 'START_RECORDING':
-        this.startRecording();
-        sendResponse({ success: true });
+        this.startRecording(message.payload || {}).then(sendResponse).catch(error => sendResponse({ error: error.message }));
         break;
         
       case 'STOP_RECORDING':
-        const recordedData = this.stopRecording();
-        sendResponse({ success: true, data: recordedData });
+        this.stopRecording().then(data => sendResponse({ success: true, data })).catch(error => sendResponse({ error: error.message }));
         break;
         
       case 'GET_RECORDING_STATUS':
         sendResponse({ 
           isRecording: this.isRecording,
+          ownerTabId: this.recordingOwnerTabId,
+          sessionId: this.recordingSessionId,
+          paused: this.recordingPaused,
           stepCount: this.recordedSteps.length,
           startUrl: this.recordingStartUrl
         });
         break;
         
       case 'PAUSE_RECORDING':
-        this.pauseRecording();
-        sendResponse({ success: true });
+        this.pauseRecording().then(() => sendResponse({ success: true })).catch(error => sendResponse({ error: error.message }));
         break;
         
       case 'RESUME_RECORDING':
-        this.resumeRecording();
-        sendResponse({ success: true });
+        this.resumeRecording().then(() => sendResponse({ success: true })).catch(error => sendResponse({ error: error.message }));
         break;
       
       default:
@@ -1273,13 +1323,17 @@ class GuideMeContent {
   
   async checkForActiveRecording() {
     try {
+      const identity = await chrome.runtime.sendMessage({ type: 'GET_GUIDEME_TAB_ID' });
       const result = await chrome.storage.local.get(['activeRecording']);
-      if (result.activeRecording && result.activeRecording.isRecording) {
+      if (result.activeRecording?.isRecording && result.activeRecording.ownerTabId && result.activeRecording.ownerTabId === identity.tabId) {
         console.log('GuideMe: Found active recording session, resuming...');
         this.recordedSteps = result.activeRecording.steps || [];
         this.recordingStartUrl = result.activeRecording.startUrl;
         this.recordingStartTime = result.activeRecording.startTime;
         this.isRecording = true;
+        this.recordingOwnerTabId = identity.tabId;
+        this.recordingSessionId = result.activeRecording.sessionId || null;
+        this.recordingPaused = result.activeRecording.paused === true;
         
         // Mark page navigation as a step
         if (this.recordedSteps.length > 0) {
@@ -1290,20 +1344,30 @@ class GuideMeContent {
           }
         }
         
-        this.setupRecordingListeners();
+        if (!this.recordingPaused) this.setupRecordingListeners();
         this.showRecordingOverlay();
+        if (this.recordingPaused) this.updateRecordingOverlay('paused');
       }
     } catch (e) {
       console.log('GuideMe: No active recording to resume');
     }
   }
   
-  startRecording() {
+  async startRecording({ sessionId } = {}) {
     if (this.isRecording) {
+      if ((sessionId || null) !== this.recordingSessionId) throw new Error('Stop the current recording before starting another.');
       console.log('GuideMe: Already recording');
-      return;
+      return { success: true };
     }
     
+    const identity = await chrome.runtime.sendMessage({ type: 'GET_GUIDEME_TAB_ID' });
+    if (!identity.tabId) throw new Error('Refresh this page before recording.');
+    const { activeRecording } = await chrome.storage.local.get(['activeRecording']);
+    if (activeRecording?.isRecording && activeRecording.ownerTabId !== identity.tabId) throw new Error('Stop the recording in the other tab first.');
+    if (sessionId && (await chrome.storage.local.get(['saveSessionHistory'])).saveSessionHistory === false) throw new Error('Enable session history in Settings before recording this session.');
+    this.recordingOwnerTabId = identity.tabId;
+    this.recordingSessionId = sessionId || null;
+    this.recordingPaused = false;
     // Stop any active guide
     if (this.isGuideActive) {
       this.stopGuide();
@@ -1316,25 +1380,29 @@ class GuideMeContent {
     this.recordingStartTime = Date.now();
     
     // Save recording state for cross-page persistence
-    this.saveRecordingState();
+    if (!await this.saveRecordingState()) { this.isRecording = false; throw new Error('Could not save the recording checkpoint. Free storage and try again.'); }
     
     // Setup event listeners
     this.setupRecordingListeners();
     
     // Show recording indicator
     this.showRecordingOverlay();
+    await this.logSessionEvent({ type: 'recording', text: 'Manual recording started.', url: location.href }, this.recordingSessionId);
+    return { success: true };
   }
   
   setupRecordingListeners() {
+    this.removeRecordingListeners();
     // Click handler - capture all clicks
     this.recordingClickHandler = (e) => {
-      if (!this.isRecording) return;
+      if (!this.isRecording || this.recordingPaused || !e.isTrusted) return;
       
       // Ignore clicks on our own overlay
       if (e.target.closest('#guideme-recording-overlay')) return;
-      if (e.target.closest('#guideme-control-panel')) return;
+      if (e.target.closest('#guideme-control-panel, #guideme-companion-dock')) return;
       
-      const element = e.target;
+      const element = e.target.closest('button, a[href], input, textarea, select, [contenteditable="true"], [role="button"], [role="menuitem"]') || e.target;
+      if (element.type === 'password' || /password|one-time-code|cc-/.test(element.autocomplete || '')) return;
       
       // Check if this click will cause navigation
       const isLink = element.closest('a[href]');
@@ -1347,7 +1415,7 @@ class GuideMeContent {
       
       // Determine action type
       let actionType = 'click';
-      if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.tagName === 'SELECT') {
+      if (element.matches('input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]), textarea, select, [contenteditable="true"]')) {
         actionType = 'focus'; // We'll capture the value on blur/change
       }
       
@@ -1370,6 +1438,7 @@ class GuideMeContent {
       
       console.log('GuideMe: 📍 Recorded step', step.id, '-', step.description);
       this.recordedSteps.push(step);
+      this.logSessionEvent({ id: `${this.recordingStartTime}:${step.id}`, type: 'action', source: 'recorded', url: step.pageUrl, step }, this.recordingSessionId);
       
       // Update overlay
       this.updateRecordingOverlay();
@@ -1386,13 +1455,14 @@ class GuideMeContent {
     
     // Input handler - capture text input
     this.recordingInputHandler = (e) => {
-      if (!this.isRecording) return;
+      if (!this.isRecording || this.recordingPaused || !e.isTrusted) return;
       
       const element = e.target;
-      if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName)) return;
+      if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) && !(this.recordingSessionId && element.isContentEditable)) return;
+      if (element.matches('input[type="checkbox"], input[type="radio"]')) return;
       
       // Ignore password fields for privacy
-      if (element.type === 'password') {
+      if (element.type === 'password' || /password|one-time-code|cc-/.test(element.autocomplete || '')) {
         console.log('GuideMe: Skipping password field for privacy');
         return;
       }
@@ -1400,11 +1470,12 @@ class GuideMeContent {
       // Check if we already have a focus step for this element
       const existingStepIndex = this.recordedSteps.findIndex(s => 
         s.action === 'focus' && 
-        s.robustSelectors?.name === element.name &&
+        s.robustSelectors?.cssSelector === this.generateRobustSelectors(element).cssSelector &&
+        s.robustSelectors?.id === (element.id || undefined) &&
         s.pageUrl === window.location.href
       );
       
-      const value = element.value;
+      const value = this.recordingSessionId ? '' : element.value;
       const selectors = this.generateRobustSelectors(element);
       
       if (existingStepIndex >= 0) {
@@ -1432,6 +1503,8 @@ class GuideMeContent {
       
       this.updateRecordingOverlay();
       this.saveRecordingState();
+      const captured = { ...this.recordedSteps[existingStepIndex >= 0 ? existingStepIndex : this.recordedSteps.length - 1], value: undefined };
+      this.logSessionEvent({ id: `${this.recordingStartTime}:${captured.id}`, type: 'action', source: 'recorded', url: location.href, step: captured }, this.recordingSessionId);
     };
     
     // Add listeners
@@ -1497,7 +1570,7 @@ class GuideMeContent {
     }
   }
   
-  stopRecording() {
+  async stopRecording() {
     if (!this.isRecording) {
       return { steps: [], startUrl: '' };
     }
@@ -1505,11 +1578,12 @@ class GuideMeContent {
     console.log('GuideMe: ⏹️ Stopping recording -', this.recordedSteps.length, 'steps captured');
     
     this.isRecording = false;
+    clearTimeout(this.recordingSaveTimeout);
     this.removeRecordingListeners();
     this.hideRecordingOverlay();
     
     // Clear saved state
-    chrome.storage.local.remove(['activeRecording']);
+    await chrome.storage.local.remove(['activeRecording']);
     
     const result = {
       steps: this.recordedSteps,
@@ -1518,6 +1592,8 @@ class GuideMeContent {
       endUrl: window.location.href
     };
     
+    result.sessionId = this.recordingSessionId;
+    await this.logSessionEvent({ type: 'recording', text: 'Manual recording stopped.', url: location.href }, this.recordingSessionId);
     // Reset
     this.recordedSteps = [];
     this.recordingStartUrl = '';
@@ -1526,32 +1602,44 @@ class GuideMeContent {
     return result;
   }
   
-  pauseRecording() {
+  async pauseRecording() {
     if (!this.isRecording) return;
     this.removeRecordingListeners();
+    this.recordingPaused = true;
+    clearTimeout(this.recordingSaveTimeout);
+    await this.saveRecordingState();
     this.updateRecordingOverlay('paused');
     console.log('GuideMe: ⏸️ Recording paused');
   }
   
-  resumeRecording() {
+  async resumeRecording() {
     if (!this.isRecording) return;
+    this.recordingPaused = false;
+    await this.saveRecordingState();
     this.setupRecordingListeners();
     this.updateRecordingOverlay();
     console.log('GuideMe: ▶️ Recording resumed');
   }
   
   async saveRecordingState() {
+    if (!this.isRecording) return false;
     try {
       await chrome.storage.local.set({
         activeRecording: {
           isRecording: this.isRecording,
+          ownerTabId: this.recordingOwnerTabId,
+          sessionId: this.recordingSessionId,
+          paused: this.recordingPaused,
           steps: this.recordedSteps,
           startUrl: this.recordingStartUrl,
           startTime: this.recordingStartTime
         }
       });
+      return true;
     } catch (e) {
       console.error('GuideMe: Failed to save recording state', e);
+      this.historyError = 'The recording checkpoint could not be saved. Stop recording and check available storage.';
+      return false;
     }
   }
   
@@ -1655,7 +1743,7 @@ class GuideMeContent {
     
     // Bind stop button
     overlay.querySelector('.guideme-recording-stop').addEventListener('click', async () => {
-      const data = this.stopRecording();
+      const data = await this.stopRecording();
       
       // Store completed recording in storage so popup can retrieve it
       await chrome.storage.local.set({ 
@@ -2038,6 +2126,8 @@ class GuideMeContent {
     this.isMultiPageTask = false; // Reset flag
     this.isSavedGuideReplay = false; // Reset replay flag
     this.allStepsForSaving = []; // Clear saved steps
+    this.guideSessionId = null;
+    this.guideStartUrl = '';
     this.visitedUrls = []; // Clear visited URLs
     this.originalTask = '';
     this.continuationCount = 0; // Reset continuation counter
@@ -2998,18 +3088,31 @@ class GuideMeContent {
         : 'Guidance has ended here. Review the current page and add more context if you need a specific next action.',
       remainingActions: Array.isArray(outcome.remainingActions) ? outcome.remainingActions.slice(0, 8).map(action => ({ text: String(typeof action === 'string' ? action : action?.text || '').slice(0, 600) })).filter(action => action.text) : [],
       completedSteps: this.completedSteps.map(step => ({ description: step.description, verification: step.verification, completedAt: step.completedAt })),
-      finishedAt: Date.now()
+      finishedAt: Date.now(),
+      // Keep replay targets locally so a reload or a failed save cannot discard the journey.
+      journey: {
+        id: this.guideSessionId ||= crypto.randomUUID(),
+        startUrl: this.guideStartUrl || this.allStepsForSaving[0]?.pageUrl || window.location.href,
+        steps: structuredClone(this.allStepsForSaving),
+        isSavedGuideReplay: this.isSavedGuideReplay
+      },
+      save: { state: 'saving', message: 'Saving your guided steps…' }
     };
     this.lastGuideSummary = summary;
+    this.logSessionEvent({ id: summary.id, type: 'outcome', status, url: summary.url, text: summary.summary, remainingActions: summary.remainingActions });
     this.panelPhase = status;
     this.panelMessage = '';
     this.currentSteps = [];
     this.currentStepIndex = 0;
     this.updateCompanionUI();
-    // Persist the terminal report separately from resumable action checkpoints.
-    await this.clearGuideState();
-    if (version !== this.requestVersion) return;
-    if (this.ownerTabId) await chrome.storage.local.set({ [`guideme_summary_${this.ownerTabId}`]: summary });
+    // Retain the full journey before deleting the active checkpoint.
+    try {
+      if (this.ownerTabId) await chrome.storage.local.set({ [`guideme_summary_${this.ownerTabId}`]: summary });
+      if (version === this.requestVersion) await this.clearGuideState();
+    } catch (error) {
+      // The Library save can still succeed; keep the active checkpoint if the report could not be stored.
+      console.error('GuideMe: Could not persist the session summary:', error);
+    }
     if (version !== this.requestVersion) {
       if (this.ownerTabId) {
         const key = `guideme_summary_${this.ownerTabId}`;
@@ -3018,7 +3121,8 @@ class GuideMeContent {
       return;
     }
     if (this.guideWasEdited && this.savedGuideId && this.allOriginalSteps) await this.updateSavedGuideInStorage();
-    if (status === 'complete') await this.autoSaveGuideIfEnabled();
+    // Saving performed steps is independent of claiming the business task succeeded.
+    await this.autoSaveGuideIfEnabled(summary);
     if (!this.panelOwned && version === this.requestVersion) {
       this.panelOwned = true;
       this.startCompanionUpdates();
@@ -3030,65 +3134,62 @@ class GuideMeContent {
     return this.finishGuidance({ status: 'handoff', summary: 'Your saved walkthrough is finished. Review the result on the page.' });
   }
 
-  async autoSaveGuideIfEnabled() {
-    const version = this.requestVersion;
+  async persistGuideSummary(summary) {
+    if (!this.ownerTabId || this.lastGuideSummary?.id !== summary.id) return;
+    const key = `guideme_summary_${this.ownerTabId}`;
+    const stored = (await chrome.storage.local.get([key]))[key];
+    // A late save must never restore a dismissed summary or replace a new task.
+    if (stored?.id === summary.id && this.lastGuideSummary?.id === summary.id) await chrome.storage.local.set({ [key]: summary });
+  }
+
+  autoSaveGuideIfEnabled(summary = this.lastGuideSummary, force = false) {
+    if (!summary?.journey) return Promise.resolve({ error: 'No recorded guided steps are available to save.' });
+    if (this.guideSaves.has(summary.id)) return this.guideSaves.get(summary.id);
+    const operation = this.saveGuidedSession(summary, force).finally(() => this.guideSaves.delete(summary.id));
+    this.guideSaves.set(summary.id, operation);
+    return operation;
+  }
+
+  async saveGuidedSession(summary, force) {
+    const journey = summary.journey;
+    const update = async (state, message, guideId) => {
+      summary.save = { state, message, ...(guideId ? { guideId } : {}) };
+      await this.persistGuideSummary(summary);
+    };
     try {
-      // Check if auto-save is enabled
-      const result = await chrome.storage.local.get(['autoSaveGuides']);
-      if (version !== this.requestVersion) return;
-      const autoSaveEnabled = result.autoSaveGuides !== false; // Default true
-      
-      if (!autoSaveEnabled) {
-        console.log('GuideMe: Auto-save disabled, skipping...');
-        return;
+      if (journey.isSavedGuideReplay) {
+        await update('replay', 'This walkthrough is already in your Library.');
+        return { success: true, skipped: true };
       }
-      
-      // Don't auto-save if this was already a saved guide replay
-      if (this.isSavedGuideReplay) {
-        console.log('GuideMe: Skipping auto-save for replayed guide');
-        return;
+      if (!journey.steps.length) {
+        await update('empty', 'No guided actions were recorded to save.');
+        return { success: true, skipped: true };
       }
-      
-      // Use allStepsForSaving which has the complete journey
-      const stepsToSave = this.allStepsForSaving || [];
-      
-      console.log('GuideMe: ========== AUTO-SAVE DEBUG ==========');
-      console.log('GuideMe: Total steps to save:', stepsToSave.length);
-      stepsToSave.forEach((step, i) => {
-        console.log(`GuideMe: Step ${i + 1}:`, {
-          desc: step.description?.substring(0, 40),
-          hasRobustSelectors: !!step.robustSelectors,
-          selectorKeys: step.robustSelectors ? Object.keys(step.robustSelectors) : []
-        });
-      });
-      console.log('GuideMe: =====================================');
-      
-      if (stepsToSave.length === 0) {
-        console.log('GuideMe: No steps to save');
-        return;
+      const settings = await chrome.storage.local.get(['autoSaveGuides']);
+      if (!force && settings.autoSaveGuides === false) {
+        await update('disabled', 'Autosave is off. You can save these steps manually.');
+        return { success: true, skipped: true };
       }
-      
-      // Generate a name from the task
-      const guideName = this.originalTask.substring(0, 50) + (this.originalTask.length > 50 ? '...' : '');
-      
-      // Save via background script
-      const saveResponse = await chrome.runtime.sendMessage({
+      await update('saving', 'Saving your guided steps…');
+      const response = await chrome.runtime.sendMessage({
         type: 'SAVE_MACRO',
         payload: {
-          name: guideName,
-          task: this.originalTask,
-          steps: stepsToSave,
-          startUrl: window.location.href
+          name: summary.task.slice(0, 50) + (summary.task.length > 50 ? '…' : ''),
+          task: summary.task,
+          steps: journey.steps,
+          startUrl: journey.startUrl,
+          sourceSessionId: journey.id,
+          outcome: { status: summary.status, summary: summary.summary, remainingActions: summary.remainingActions, finishedAt: summary.finishedAt }
         }
       });
-      
-      console.log('GuideMe: ✅ Guide auto-saved!', {
-        name: guideName,
-        steps: stepsToSave.length,
-        response: saveResponse
-      });
+      if (!response?.success || response.error) throw new Error(response?.error || 'The Library did not confirm the save.');
+      await update('saved', summary.status === 'complete' ? 'Guided steps saved to Library.' : 'Recorded steps saved to Library. The overall task is not confirmed complete.', response.macro?.id);
+      return response;
     } catch (error) {
-      console.error('GuideMe: ❌ Auto-save failed:', error);
+      console.error('GuideMe: Auto-save failed:', error);
+      summary.save = { state: 'error', message: 'Could not save your guided steps. Retry saving.' };
+      try { await this.persistGuideSummary(summary); } catch {}
+      return { error: error.message };
     }
   }
 

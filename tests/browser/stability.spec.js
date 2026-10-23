@@ -498,3 +498,237 @@ test('a handoff persists for its tab across page reload and Resume explicitly re
   await expect.poll(() => page.evaluate(() => chrome.__messages.filter(message => message.type === 'CONTINUE_GUIDE').length)).toBe(1);
   expect(await page.evaluate(() => chrome.__messages.find(message => message.type === 'CONTINUE_GUIDE').payload.guidancePreference)).toBe('step-by-step');
 });
+
+test('autosave keeps completed AI steps when guidance ends with a handoff', async ({ page }) => {
+  await page.evaluate(async () => {
+    await chrome.storage.local.set({ autoSaveGuides: true });
+    __plannerResponse = { status: 'handoff', steps: [], summary: 'The options are open. Review them before saving.' };
+  });
+  await startGuide(page, 'toggle', { type: 'attribute', attribute: 'aria-expanded', value: 'true' }, { saved: false, panel: true });
+  await page.locator('#toggle').click();
+  await expect.poll(() => page.evaluate(() => guideMeInstance.completedSteps.length)).toBe(1);
+  await page.evaluate(() => guideMeInstance.nextStep('manual'));
+  await expect.poll(() => page.evaluate(() => chrome.__messages.filter(message => message.type === 'SAVE_MACRO').length)).toBe(1);
+  const saved = await page.evaluate(() => chrome.__messages.find(message => message.type === 'SAVE_MACRO').payload);
+  expect(saved.steps).toHaveLength(2);
+  expect(saved.steps[0].robustSelectors.id).toBe('toggle');
+  expect(saved.steps.map(step => step.verification)).toEqual(['verified', 'manual']);
+  expect(saved.outcome.status).toBe('handoff');
+  expect(await page.evaluate(() => guideMeInstance.lastGuideSummary.save.state)).toBe('saved');
+});
+
+async function finishSession(page, { status = 'handoff', enabled = true, replay = false, steps = 1 } = {}) {
+  return page.evaluate(async ({ status, enabled, replay, steps }) => {
+    await chrome.storage.local.set({ autoSaveGuides: enabled });
+    const guide = guideMeInstance;
+    guide.ownerTabId = 81;
+    guide.panelOwned = true;
+    guide.originalTask = 'Configure this page';
+    guide.guideSessionId = 'regression-session';
+    guide.guideStartUrl = `${location.origin}/original-start`;
+    guide.isSavedGuideReplay = replay;
+    const descriptor = guide.pageIntelligence.describe(document.getElementById('toggle'));
+    guide.completedSteps = Array.from({ length: steps }, () => ({
+      element: descriptor.id, action: 'click', description: 'Open the options', targetDescriptor: descriptor,
+      robustSelectors: { id: 'toggle' }, verification: 'verified', pageUrl: guide.guideStartUrl
+    }));
+    guide.allStepsForSaving = replay ? [] : structuredClone(guide.completedSteps);
+    await guide.finishGuidance({ status, summary: 'Review the options.', remainingActions: [{ text: 'Review and save when ready.' }] });
+    return guide.lastGuideSummary;
+  }, { status, enabled, replay, steps });
+}
+
+for (const status of ['complete', 'blocked']) {
+  test(`autosave preserves performed actions and the ${status} outcome`, async ({ page }) => {
+    const summary = await finishSession(page, { status });
+    expect(summary.save.state).toBe('saved');
+    const payload = await page.evaluate(() => chrome.__messages.find(message => message.type === 'SAVE_MACRO').payload);
+    expect(payload.outcome.status).toBe(status);
+    expect(payload.startUrl).toContain('/original-start');
+    expect(payload.sourceSessionId).toBe('regression-session');
+    expect(payload.steps).toHaveLength(1);
+  });
+}
+
+test('autosave respects the setting while allowing an explicit manual save', async ({ page }) => {
+  const summary = await finishSession(page, { enabled: false });
+  expect(summary.save.state).toBe('disabled');
+  expect(await page.evaluate(() => chrome.__messages.some(message => message.type === 'SAVE_MACRO'))).toBe(false);
+  await page.evaluate(() => new Promise(resolve => guideMeInstance.handleMessage({ type: 'SAVE_GUIDE_SESSION' }, {}, resolve)));
+  expect(await page.evaluate(() => guideMeInstance.lastGuideSummary.save.state)).toBe('saved');
+});
+
+test('empty guides and saved replays never autosave another Library entry', async ({ page }) => {
+  expect((await finishSession(page, { replay: true })).save.state).toBe('replay');
+  expect((await finishSession(page, { steps: 0 })).save.state).toBe('empty');
+  expect(await page.evaluate(() => chrome.__messages.some(message => message.type === 'SAVE_MACRO'))).toBe(false);
+});
+
+test('a rejected background save remains retryable after reload with its original replay targets', async ({ page }) => {
+  await page.evaluate(() => {
+    const send = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = message => {
+      if (message.type === 'SAVE_MACRO') { chrome.__messages.push(message); return Promise.resolve({ error: 'Storage quota exceeded' }); }
+      return send(message);
+    };
+  });
+  const summary = await finishSession(page);
+  expect(summary.save.state).toBe('error');
+  expect(summary.save.message).toContain('Retry');
+  await page.addInitScript(() => {
+    const send = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = message => message.type === 'GET_GUIDEME_TAB_ID' ? Promise.resolve({ tabId: 81 }) : send(message);
+  });
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => guideMeInstance.lastGuideSummary?.save.state)).toBe('saved');
+  const saved = await page.evaluate(() => chrome.__messages.find(message => message.type === 'SAVE_MACRO').payload);
+  expect(saved.sourceSessionId).toBe('regression-session');
+  expect(saved.steps[0].robustSelectors.id).toBe('toggle');
+  expect(saved.startUrl).toContain('/original-start');
+  expect(await page.evaluate(() => guideMeInstance.isGuideActive)).toBe(false);
+});
+
+test('a save with no acknowledgement is shown as failed and can be retried once', async ({ page }) => {
+  await page.evaluate(() => {
+    const send = chrome.runtime.sendMessage;
+    window.__saveFails = true;
+    chrome.runtime.sendMessage = message => {
+      if (message.type === 'SAVE_MACRO' && __saveFails) { chrome.__messages.push(message); return Promise.resolve(undefined); }
+      return send(message);
+    };
+  });
+  expect((await finishSession(page)).save.state).toBe('error');
+  await page.evaluate(async () => {
+    __saveFails = false;
+    await Promise.all([guideMeInstance.autoSaveGuideIfEnabled(), guideMeInstance.autoSaveGuideIfEnabled()]);
+  });
+  expect(await page.evaluate(() => guideMeInstance.lastGuideSummary.save.state)).toBe('saved');
+  const ids = await page.evaluate(() => chrome.__messages.filter(message => message.type === 'SAVE_MACRO').map(message => message.payload.sourceSessionId));
+  expect(ids).toEqual(['regression-session', 'regression-session']);
+});
+
+test('resuming after a summary reload preserves the full journey for the next save', async ({ page }) => {
+  await finishSession(page);
+  await page.addInitScript(() => {
+    const send = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = message => message.type === 'GET_GUIDEME_TAB_ID' ? Promise.resolve({ tabId: 81 }) : send(message);
+  });
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => guideMeInstance.allStepsForSaving.length)).toBe(1);
+  await page.evaluate(async () => {
+    const guide = guideMeInstance;
+    const descriptor = guide.pageIntelligence.describe(document.getElementById('next'));
+    guide.currentSteps = [{ element: descriptor.id, targetDescriptor: descriptor, action: 'click', description: 'Next control' }];
+    guide.currentHighlightedElement = document.getElementById('next');
+    guide.trackStepCompletion('manual');
+    await guide.finishGuidance({ status: 'complete', summary: 'The page reports the changes were saved.' });
+  });
+  const saved = await page.evaluate(() => chrome.__messages.find(message => message.type === 'SAVE_MACRO').payload);
+  expect(saved.steps).toHaveLength(2);
+  expect(saved.steps.map(step => step.robustSelectors.id)).toEqual(['toggle', 'next']);
+  expect(saved.sourceSessionId).toBe('regression-session');
+  expect(saved.startUrl).toContain('/original-start');
+});
+
+test('an in-flight save does not resurrect a dismissed summary', async ({ page }) => {
+  await page.evaluate(() => {
+    const send = chrome.runtime.sendMessage;
+    window.__saving = false;
+    chrome.runtime.sendMessage = async message => {
+      if (message.type === 'SAVE_MACRO') {
+        __saving = true;
+        await new Promise(resolve => { window.__finishSave = resolve; });
+      }
+      return send(message);
+    };
+  });
+  const saving = finishSession(page);
+  await expect.poll(() => page.evaluate(() => __saving)).toBe(true);
+  await page.evaluate(() => {
+    guideMeInstance.handleMessage({ type: 'DISMISS_GUIDE_OUTCOME' }, {}, () => {});
+    __finishSave();
+  });
+  await saving;
+  const result = await page.evaluate(async () => ({ report: guideMeInstance.lastGuideSummary, stored: (await chrome.storage.local.get(['guideme_summary_81'])).guideme_summary_81 }));
+  expect(result.report).toBeNull();
+  expect(result.stored).toBeUndefined();
+});
+
+test('a handoff survives SPA navigation without automatically replanning or highlighting stale targets', async ({ page }) => {
+  await finishSession(page, { steps: 0 });
+  await page.locator('#spa').click();
+  await page.waitForTimeout(650);
+  expect(await page.evaluate(() => guideMeInstance.lastGuideSummary.summary)).toBe('Review the options.');
+  expect(await page.evaluate(() => guideMeInstance.isGuideActive)).toBe(false);
+  expect(await page.evaluate(() => chrome.__messages.some(message => message.type === 'CONTINUE_GUIDE'))).toBe(false);
+  expect(await page.evaluate(() => chrome.__messages.some(message => message.type === 'SESSION_EVENT' && message.event.type === 'page'))).toBe(true);
+});
+
+async function identifyRecordingTab(page, tabId = 81) {
+  await page.evaluate(tabId => {
+    const send = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = message => message.type === 'GET_GUIDEME_TAB_ID' ? Promise.resolve({ tabId }) : send(message);
+  }, tabId);
+}
+
+test('session recording captures future actions, omits entered values, pauses, resumes, and stops', async ({ page }) => {
+  await identifyRecordingTab(page);
+  await page.locator('#toggle').click();
+  await page.evaluate(() => guideMeInstance.startRecording({ sessionId: 'manual-session' }));
+  expect(await page.evaluate(() => guideMeInstance.recordedSteps.length)).toBe(0);
+  await page.locator('#labelled').click();
+  await page.locator('#labelled').fill('DO_NOT_SAVE_THIS_VALUE');
+  await page.locator('#labelled').press('Tab');
+  await page.evaluate(() => guideMeInstance.pauseRecording());
+  const count = await page.evaluate(() => guideMeInstance.recordedSteps.length);
+  await page.locator('#toggle').click();
+  expect(await page.evaluate(() => guideMeInstance.recordedSteps.length)).toBe(count);
+  expect(await page.evaluate(() => JSON.stringify(chrome.__messages))).not.toContain('DO_NOT_SAVE_THIS_VALUE');
+  await page.evaluate(() => guideMeInstance.resumeRecording());
+  await page.locator('#next').click();
+  const result = await page.evaluate(() => guideMeInstance.stopRecording());
+  expect(result.steps.length).toBe(count + 1);
+  expect(result.sessionId).toBe('manual-session');
+  expect(JSON.stringify(result)).not.toContain('DO_NOT_SAVE_THIS_VALUE');
+  await page.locator('#toggle').click();
+  await page.waitForTimeout(600);
+  expect(await page.evaluate(async () => (await chrome.storage.local.get(['activeRecording'])).activeRecording)).toBeUndefined();
+});
+
+test('recording stays in its owner tab across navigation and paused reloads', async ({ page }) => {
+  await identifyRecordingTab(page);
+  await page.addInitScript(() => {
+    const send = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = message => message.type === 'GET_GUIDEME_TAB_ID' ? Promise.resolve({ tabId: 81 }) : send(message);
+  });
+  await page.evaluate(() => guideMeInstance.startRecording({ sessionId: 'scoped-session' }));
+  await page.locator('#navigate').click();
+  await expect.poll(() => page.evaluate(() => guideMeInstance.isRecording)).toBe(true);
+  expect(await page.evaluate(() => guideMeInstance.recordedSteps[0].causesNavigation)).toBe(true);
+  await page.evaluate(() => guideMeInstance.pauseRecording());
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => guideMeInstance.isRecording)).toBe(true);
+  expect(await page.evaluate(() => guideMeInstance.recordingPaused)).toBe(true);
+  const count = await page.evaluate(() => guideMeInstance.recordedSteps.length);
+  await page.locator('#toggle').click();
+  expect(await page.evaluate(() => guideMeInstance.recordedSteps.length)).toBe(count);
+  await identifyRecordingTab(page, 99);
+  await page.evaluate(async () => {
+    guideMeInstance.isRecording = false;
+    guideMeInstance.removeRecordingListeners();
+    await guideMeInstance.checkForActiveRecording();
+  });
+  expect(await page.evaluate(() => guideMeInstance.isRecording)).toBe(false);
+});
+
+test('session recording keeps choice controls as clicks and rich-text edits omit entered text', async ({ page }) => {
+  await identifyRecordingTab(page);
+  await page.evaluate(() => guideMeInstance.startRecording({ sessionId: 'choices-and-text' }));
+  await page.locator('#checkbox').click();
+  await page.locator('[contenteditable="true"][aria-label="Notes"]').fill('PRIVATE_RICH_TEXT');
+  await page.locator('[contenteditable="true"][aria-label="Notes"]').press('Tab');
+  const result = await page.evaluate(() => guideMeInstance.stopRecording());
+  expect(result.steps.find(step => step.robustSelectors.id === 'checkbox').action).toBe('click');
+  expect(result.steps.some(step => step.action === 'type' && step.robustSelectors.ariaLabel === 'Notes')).toBe(true);
+  expect(JSON.stringify(result)).not.toContain('PRIVATE_RICH_TEXT');
+});

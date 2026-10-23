@@ -28,6 +28,22 @@
         <div class="processing-track" aria-hidden="true"><span></span></div>
       </section>
       <div id="statusMessage" class="status-message hidden" role="status" aria-live="polite"></div>
+      <section id="sessionContextCard" class="session-context glass hidden" aria-label="Current session">
+        <span class="eyebrow">YOUR SESSION</span>
+        <h2 id="sessionTaskTitle"></h2>
+        <p id="sessionHistoryStatus" class="history-meta"></p>
+        <details id="sessionInstructions" open><summary>Saved instructions</summary><div id="sessionInstructionsCopy"></div></details>
+        <div class="session-buttons">
+          <button id="continueSessionBtn" class="retry-guide-btn">Continue guidance here</button>
+          <button id="recordSessionBtn" class="record-btn">Record my actions</button>
+          <button id="openSessionHistoryBtn" class="action-btn">View session history</button>
+        </div>
+        <div id="sessionRecordingControls" class="hidden">
+          <p id="sessionRecordingStatus" role="status"></p>
+          <p class="history-meta">Controls you use are recorded from now on. Entered text stays out of session history.</p>
+          <div class="session-buttons"><button id="pauseSessionRecordingBtn" class="action-btn">Pause recording</button><button id="resumeSessionRecordingBtn" class="action-btn hidden">Resume recording</button><button id="stopSessionRecordingBtn" class="action-btn">Stop recording</button></div>
+        </div>
+      </section>
     <!-- Main View -->
     <main id="mainView" class="main-view">
       <div class="welcome">
@@ -44,6 +60,9 @@
             placeholder="Find a setting, create something,&#10;or learn your way around…"
             rows="3"
           ></textarea>
+          <button id="clearTaskBtn" class="clear-task-btn" type="button" aria-label="Clear request" title="Clear text">
+            <span class="icon icon-sm" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></span>
+          </button>
           <button id="voiceBtn" class="voice-btn" title="Voice input (click to speak)">
             <span class="icon icon-sm">
               <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
@@ -133,6 +152,7 @@
       </div>
 
       <div class="saved-guides-content">
+        <button id="historyBtn" class="retry-guide-btn">Session history</button>
         <!-- Search & Filter -->
         <div class="search-filter-bar">
           <div class="search-wrapper">
@@ -180,6 +200,14 @@
     </div>
 
     <!-- Settings View -->
+    <section id="historyView" class="history-view hidden">
+      <div class="settings-header"><button id="backFromHistoryBtn" class="icon-btn" aria-label="Back to workspace">←</button><h2>Session history</h2></div>
+      <p class="view-description">Your questions, saved advice, and recorded progress across pages.</p>
+      <button id="clearHistoryBtn" class="action-btn">Clear history</button>
+      <p id="historyEmpty" class="history-meta">Your next request will appear here, even if no actions are recorded.</p>
+      <section id="historyDetail" class="hidden"><h3 id="historyDetailTitle"></h3><div class="session-buttons"><button id="attachSessionBtn" class="action-btn">Open in workspace</button><button id="saveHistoryWalkthroughBtn" class="action-btn">Save as walkthrough</button><button id="deleteHistorySessionBtn" class="action-btn">Delete session</button></div><ol id="historyTimeline" class="history-timeline"></ol></section>
+      <div id="historyList" class="history-list"></div>
+    </section>
     <div id="settingsView" class="settings-view hidden">
       <div class="settings-header">
         <button id="backBtn" class="icon-btn" aria-label="Back to workspace">
@@ -214,7 +242,8 @@
           </div>
           <p class="theme-save-note">Appearance saves automatically.</p>
         </fieldset>
-        <div class="auto-save-section"><label class="toggle-wrapper"><input type="checkbox" id="autoSaveToggle" checked><span class="toggle-slider"></span><span class="toggle-label">Save completed guides</span></label><span class="auto-save-hint">Keep your walkthroughs in the library.</span></div>
+        <div class="auto-save-section"><label class="toggle-wrapper"><input type="checkbox" id="autoSaveToggle" checked><span class="toggle-slider"></span><span class="toggle-label">Autosave guided steps</span></label><span class="auto-save-hint">Keep performed steps in Library, including when guidance hands back to you.</span></div>
+        <div class="auto-save-section"><label class="toggle-wrapper"><input type="checkbox" id="saveHistoryToggle" checked><span class="toggle-slider"></span><span class="toggle-label">Save session history</span></label><span class="auto-save-hint">Keep requests, instructions, and progress on this device. Manage them in Library → Session history.</span></div>
         <div class="setting-group">
           <label for="apiProvider" class="setting-label">AI Provider</label>
           <select id="apiProvider" class="setting-select">
@@ -375,6 +404,8 @@
         <p id="completionDetail"></p>
         <ol id="summaryActions" class="summary-actions"></ol>
         <details id="summaryHistory" class="summary-history"><summary id="summaryHistoryLabel">Your recorded actions</summary><ol id="summaryHistoryList"></ol></details>
+        <p id="summarySaveStatus" role="status"></p>
+        <button id="saveSessionBtn" class="retry-guide-btn hidden">Retry saving</button>
         <button id="resumeGuideBtn" class="retry-guide-btn">Guide me step by step</button>
         <button id="newGuideBtn" class="guide-btn">Start another guide<span aria-hidden="true">↗</span></button>
       </section>
@@ -511,6 +542,7 @@
   <script src="panel-ui.js"></script>
   <script src="../lib/ai-config.js"></script>
   <script src="provider-settings.js"></script>
+  <script src="history-ui.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

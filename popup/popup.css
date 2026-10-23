@@ -348,7 +348,7 @@ h1, h2, h3, p {
 .task-input {
   width: 100%;
   min-height: 104px;
-  padding: 0 20px 10px 0;
+  padding: 0 34px 10px 0;
   background: none;
   border: 0;
   resize: vertical;
@@ -377,6 +377,22 @@ h1, h2, h3, p {
   display: flex;
 }
 .voice-btn:hover, .voice-btn.listening {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.clear-task-btn {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  display: flex;
+  padding: 6px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+.clear-task-btn:hover, .clear-task-btn:focus-visible {
   color: var(--accent);
   background: var(--accent-soft);
 }
@@ -1406,3 +1422,22 @@ html:not([data-theme-ready]) body { visibility: hidden; }
 .summary-history ol { padding-left: 19px; margin-top: 10px; }
 .summary-history li + li { margin-top: 8px; }
 #completionCard #completionDetail { white-space: pre-line; overflow-wrap: anywhere; }
+
+/* Session context stays readable while the page changes; history uses the saved palette. */
+.session-context { margin: 8px 0 24px; padding: 20px; border-radius: var(--radius-xl); overflow-wrap: anywhere; }
+.session-context h2 { margin: 8px 0; font-size: 19px; }
+.session-context details { margin: 14px 0; }
+.session-context summary { cursor: pointer; color: var(--ink); }
+.session-context p, .session-context li { font-size: 13px; }
+.session-context ol { padding-left: 22px; }
+.session-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.session-buttons > button { flex: 1 1 140px; margin: 0; font-size: 12px; padding: 10px; min-width: 0; }
+.history-view { padding: 8px 0 24px; overflow-wrap: anywhere; }
+.history-list { display: grid; gap: 10px; margin-top: 20px; }
+.history-session { text-align: left; color: var(--ink); background: var(--glass); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 16px; cursor: pointer; }
+.history-session strong, .history-session span { display: block; }
+.history-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.history-timeline { list-style: none; padding: 0; }
+.history-timeline > li { border-left: 2px solid var(--line-strong); padding: 0 0 20px 14px; }
+.history-timeline p { white-space: pre-wrap; margin: 6px 0; }
+.history-timeline ol { padding-left: 20px; }

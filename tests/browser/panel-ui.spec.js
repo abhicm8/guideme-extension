@@ -7,6 +7,7 @@ const panelMock = `
   window.__generation = 0;
   window.__panelActivity = { phase: 'idle' };
   window.__guideData = { isGuideActive: false, steps: [], completedSteps: [], activity: { phase: 'idle' } };
+  window.__savedGuides = [];
   window.chrome = {
     tabs: {
       async query() { return [{ id: 1, windowId: 1, url: 'https://example.com/dashboard' }]; },
@@ -32,7 +33,7 @@ const panelMock = `
       async sendMessage(message) {
         __panelMessages.push(message);
         if (message.type === 'GET_PANEL_ACTIVITY') return structuredClone(__panelActivity);
-        if (message.type === 'GET_MACROS') return [];
+        if (message.type === 'GET_MACROS') return structuredClone(__savedGuides);
         if (message.type === 'CANCEL_GUIDE_TASK') { __generation++; __panelActivity = { phase: 'idle' }; return { success: true }; }
         if (message.type === 'START_GUIDE_TASK') {
           const generation = ++__generation;
@@ -404,4 +405,141 @@ test('click receipt is shown while checking a result without telling the user to
   });
   await expect(page.locator('#actionReceipt')).toContainText('Click on “Open” registered');
   await expect(page.locator('#currentStep')).toBeHidden();
+});
+
+test('summary exposes save errors and Retry saving updates the status without resuming actions', async ({ page }) => {
+  await page.evaluate(() => {
+    const report = {
+      status: 'handoff', task: 'Configure options', summary: 'Review the open options.', remainingActions: [], finishedAt: Date.now(),
+      completedSteps: [{ description: 'Opened options', verification: 'verified' }],
+      save: { state: 'error', message: 'Could not save your guided steps. Retry saving.' }
+    };
+    __guideData = { isGuideActive: false, steps: [], activity: { phase: 'handoff' }, lastGuideSummary: report };
+    const send = chrome.tabs.sendMessage;
+    chrome.tabs.sendMessage = async (tabId, message) => {
+      const result = await send(tabId, message);
+      if (message.type === 'SAVE_GUIDE_SESSION') report.save = { state: 'saved', message: 'Recorded steps saved to Library. The overall task is not confirmed complete.' };
+      return result;
+    };
+  });
+  await expect(page.locator('#summarySaveStatus')).toContainText('Could not save');
+  await page.getByRole('button', { name: 'Retry saving', exact: true }).click();
+  await expect(page.locator('#summarySaveStatus')).toContainText('saved to Library');
+  await expect(page.locator('#saveSessionBtn')).toBeHidden();
+  expect(await page.evaluate(() => __panelMessages.filter(message => message.type === 'SAVE_GUIDE_SESSION').length)).toBe(1);
+  expect(await page.evaluate(() => __panelMessages.some(message => message.type === 'REFRESH_GUIDE' || message.type === 'ADVANCE_GUIDE'))).toBe(false);
+});
+
+test('Library labels saved guided sessions with an unconfirmed outcome as partial', async ({ page }) => {
+  await page.evaluate(() => {
+    __savedGuides = [{ id: 'guided-session', name: 'Configure options', startUrlPattern: 'example.com', steps: [{ description: 'Open options' }], outcome: { status: 'handoff' } }];
+  });
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await expect(page.locator('#savedGuidesList')).toContainText('Configure options');
+  await expect(page.locator('#savedGuidesList .guide-badge')).toHaveText('partial');
+  await expect(page.locator('#savedGuidesList')).toContainText('1 steps');
+});
+
+async function installHistoryFixture(page) {
+  const setup = () => {
+    const initial = {
+      id: 'history-session', task: 'Create a private repository', status: 'handoff', startUrl: 'https://example.com/start',
+      createdAt: 1000, updatedAt: 2000,
+      events: [
+        { id: 'request', type: 'request', text: 'Create a private repository', url: 'https://example.com/start', at: 1000 },
+        { id: 'advice', type: 'advice', text: 'Open Create new, choose New repository, enter a name, then choose Private.', status: 'handoff', remainingActions: [{ text: 'Enter a repository name.' }, { text: 'Choose Private.' }], url: 'https://example.com/start', at: 2000 }
+      ]
+    };
+    const state = JSON.parse(localStorage.getItem('__historyFixture') || 'null') || { sessions: [initial], current: initial.id, url: 'https://example.com/start' };
+    window.__historyFixture = state;
+    const persist = () => localStorage.setItem('__historyFixture', JSON.stringify(state));
+    const send = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = async message => {
+      const result = await send(message);
+      if (message.type === 'GET_SESSION_CONTEXT') return { session: state.sessions.find(item => item.id === state.current) || null };
+      if (message.type === 'GET_SESSION_HISTORY') return { sessions: state.sessions.map(item => ({ ...item, actionCount: item.events.filter(event => event.type === 'action').length })) };
+      if (message.type === 'GET_HISTORY_SESSION') return { session: state.sessions.find(item => item.id === message.sessionId) || null };
+      if (message.type === 'ATTACH_HISTORY_SESSION') { state.current = message.sessionId; persist(); }
+      if (message.type === 'DELETE_HISTORY_SESSION') { state.sessions = state.sessions.filter(item => item.id !== message.sessionId); persist(); }
+      if (message.type === 'CLEAR_SESSION_HISTORY') { state.sessions = []; persist(); }
+      return result;
+    };
+    chrome.tabs.query = async () => [{ id: 1, windowId: 1, url: state.url }];
+    const tabSend = chrome.tabs.sendMessage;
+    chrome.tabs.sendMessage = async (tabId, message) => {
+      const result = await tabSend(tabId, message);
+      if (message.type === 'START_RECORDING') await chrome.storage.local.set({ activeRecording: { isRecording: true, ownerTabId: tabId, sessionId: message.payload.sessionId, steps: [] } });
+      if (message.type === 'PAUSE_RECORDING' || message.type === 'RESUME_RECORDING') {
+        const { activeRecording } = await chrome.storage.local.get(['activeRecording']);
+        activeRecording.paused = message.type === 'PAUSE_RECORDING'; await chrome.storage.local.set({ activeRecording });
+      }
+      if (message.type === 'STOP_RECORDING') await chrome.storage.local.remove(['activeRecording']);
+      return result;
+    };
+  };
+  await page.evaluate(setup);
+  await page.addInitScript(setup);
+}
+
+test('saved instructions survive a page change and panel reload without starting another guide', async ({ page }) => {
+  await installHistoryFixture(page);
+  await expect(page.locator('#sessionContextCard')).toBeVisible();
+  await expect(page.locator('#sessionInstructionsCopy')).toContainText('choose Private');
+  await page.evaluate(() => {
+    __historyFixture.url = 'https://example.com/new';
+    localStorage.setItem('__historyFixture', JSON.stringify(__historyFixture));
+  });
+  await page.reload();
+  await expect(page.locator('#sessionInstructionsCopy')).toContainText('Advice from an earlier page');
+  await expect(page.locator('#sessionInstructionsCopy')).toContainText('Enter a repository name.');
+  expect(await page.evaluate(() => __panelMessages.some(message => message.type === 'CONTINUE_SESSION_HERE'))).toBe(false);
+  await page.getByRole('button', { name: 'Continue guidance here', exact: true }).click();
+  expect(await page.evaluate(() => __panelMessages.find(message => message.type === 'CONTINUE_SESSION_HERE').payload.sessionId)).toBe('history-session');
+});
+
+test('Library history retains advice-only sessions and renders the full timeline as text', async ({ page }) => {
+  await installHistoryFixture(page);
+  await page.evaluate(() => {
+    __historyFixture.sessions[0].events[1].text = '<img src=x onerror="window.historyInjected=true">' + 'Detailed advice. '.repeat(130);
+  });
+  await page.getByRole('button', { name: 'Library', exact: true }).click();
+  await page.getByRole('button', { name: 'Session history', exact: true }).click();
+  await page.locator('#historyList .history-session').click();
+  await expect(page.locator('#historyTimeline')).toContainText('Suggested guidance');
+  await expect(page.locator('#historyTimeline')).toContainText('Choose Private.');
+  expect((await page.locator('#historyTimeline').textContent()).length).toBeGreaterThan(2000);
+  expect(await page.evaluate(() => window.historyInjected)).toBeUndefined();
+  await expect(page.locator('#saveHistoryWalkthroughBtn')).toBeHidden();
+  await page.getByRole('button', { name: 'Delete session', exact: true }).click();
+  await expect(page.locator('#historyEmpty')).toBeVisible();
+});
+
+test('session recording has explicit start, pause, resume and stop controls', async ({ page }) => {
+  await installHistoryFixture(page);
+  await page.getByRole('button', { name: 'Record my actions', exact: true }).click();
+  await expect(page.locator('#sessionRecordingStatus')).toContainText('Recording');
+  await page.getByRole('button', { name: 'Pause recording', exact: true }).click();
+  await expect(page.locator('#sessionRecordingStatus')).toContainText('Paused');
+  await page.getByRole('button', { name: 'Resume recording', exact: true }).click();
+  await expect(page.locator('#sessionRecordingStatus')).toContainText('Recording');
+  await page.getByRole('button', { name: 'Stop recording', exact: true }).click();
+  await expect(page.locator('#sessionRecordingControls')).toBeHidden();
+  await expect(page.locator('#sessionInstructionsCopy')).toContainText('choose Private');
+});
+
+test('history and recording controls fit both palettes at a narrow panel width', async ({ page }) => {
+  await installHistoryFixture(page);
+  await page.setViewportSize({ width: 340, height: 900 });
+  mkdirSync('test-results/previews', { recursive: true });
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(theme => GuideMeTheme.set(theme), theme);
+    await expect(page.locator('#sessionContextCard')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `test-results/previews/session-${theme}.png` });
+    await page.getByRole('button', { name: 'View session history', exact: true }).click();
+    await expect(page.locator('#historyTimeline')).toContainText('Choose Private');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `test-results/previews/history-${theme}.png` });
+    await page.getByRole('button', { name: 'Back to workspace', exact: true }).filter({ visible: true }).click();
+  }
 });

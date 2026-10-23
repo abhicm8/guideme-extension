@@ -31,6 +31,12 @@ For live guidance, a trusted click registers immediately. GuideMe distinguishes 
 
 Guides now have explicit endings: **handoff** (explain the current state and remaining actions), **complete** (the page reports an outcome with visible evidence), or **blocked** (explain missing context and a useful way forward). The summary replaces stale highlights and persists for the owning tab across panel/page reopening. **Guide me step by step** resumes the same task if you want more help. The model derives summaries from your request and the current page; a generic fallback uses observed field labels, with no site-specific workflow mapping. Empty plans receive at most one summary repair request and do not leave the old step highlighted. An open form alone is never evidence that its business action succeeded.
 
+With **Autosave guided steps** enabled, performed AI-guided steps are saved to **Library** when guidance ends, including handoffs and blocked outcomes. These entries are labeled **partial** unless the page reported completion. Only recorded actions become replay steps; remaining instructions and actions performed after guidance ends are not silently recorded. The summary shows the save result and offers **Retry saving** on failure, or a manual save when autosave is off. Resuming a session updates its existing Library entry. Saved-guide replay does not create another copy.
+
+**Library → Session history** keeps your requests, suggested instructions, guidance summaries, page references, and performed actions separately from replayable walkthroughs. Advice-only sessions are saved even with zero actions. History remains available after navigation, Stop, a new request, or tab closure; it is stored locally until you delete it. **Save session history** in Settings controls future history writes independently of walkthrough autosave.
+
+The workspace retains the current session's saved instructions across pages. **Continue guidance here** explicitly reads the current page and adds guidance to that session; a handoff does not automatically replan on navigation. **Record my actions** starts optional capture from that point in the owning tab, with visible Pause, Resume, and Stop controls. Pausing persists across page reloads, and recording ends when its tab closes or Chrome restarts. Session recordings omit entered field values, passwords, payment fields, and one-time codes. Suggested steps never become recorded or verified actions merely because they were listed. In History, **Save as walkthrough** saves performed steps to the existing Library for replay. Existing standalone **Record a walkthrough** remains available.
+
 The agreed design for a future email automation mode is: provide recipient, subject and body → fill a draft → review the exact draft → explicitly approve **Send in GuideMe**. Draft changes must invalidate that approval. This execution mode is not implemented yet; the current mode guides the user's own actions.
 
 
@@ -344,7 +350,8 @@ Open **Settings** in the GuideMe side panel to configure your provider.
 | **Gemini model** | Choose a listed model or enter a custom generateContent model ID |
 | **Thinking** | Model default or supported effort levels; legacy 2.5 Flash offers token budgets |
 | **Highlight Color** | Customize the highlight color for better visibility |
-| **Auto-save Guides** | Automatically save completed guides |
+| **Autosave guided steps** | Save performed AI-guided steps to Library when guidance ends, including partial sessions |
+| **Save session history** | Keep requests, advice, and action history locally, including sessions with no recorded actions |
 
 For **Vertex AI**, choose **Google Vertex AI · service account**, paste your JSON contents or import the `.json` file, and save. The project defaults to the JSON's `project_id`; change it if billing and access belong to another project. Location defaults to `global`. Enable the Vertex AI API and billing, and grant the service account the Vertex AI User role (`roles/aiplatform.user`) in the target project. Model availability depends on that project and location.
 

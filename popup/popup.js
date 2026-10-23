@@ -28,6 +28,7 @@ class GuideMePopup {
     this.bindElements();
     this.panelUI = new GuideMePanelUI();
     this.currentView = 'main';
+    this.historyUI = new GuideMeHistoryUI(this);
     this.providerSettings = new GuideMeProviderSettings((message, type) => this.showStatus(message, type));
     await this.loadSettings();
     this.bindEvents();
@@ -105,6 +106,8 @@ class GuideMePopup {
       if (this.currentView === 'main') this.mainView.classList.toggle('hidden', complete);
       document.querySelector('.welcome')?.classList.toggle('hidden', complete);
       if (this.currentView === 'main' && this.recordingPanel?.classList.contains('hidden')) document.querySelector('.input-section')?.classList.toggle('hidden', complete);
+      if (response?.historyError) this.showStatus(response.historyError, 'error');
+      await this.historyUI?.refresh(tab, response?.isGuideActive || pending, response);
     } catch (error) {
       console.debug('GuideMe: Waiting for the current page', error.message);
     } finally {
@@ -217,6 +220,14 @@ class GuideMePopup {
   }
 
   bindEvents() {
+    document.getElementById('saveHistoryToggle').addEventListener('change', async event => {
+      try {
+        const { activeRecording } = await chrome.storage.local.get(['activeRecording']);
+        if (!event.target.checked && activeRecording?.isRecording && activeRecording.sessionId) throw new Error('Stop recording before turning off session history.');
+        await chrome.storage.local.set({ saveSessionHistory: event.target.checked });
+      }
+      catch (error) { event.target.checked = !event.target.checked; this.showStatus(error.message || 'Could not save the history preference.', 'error'); }
+    });
     document.querySelectorAll('input[name="appearanceTheme"]').forEach(input => {
       input.addEventListener('change', async () => {
         if (!input.checked) return;
@@ -247,7 +258,29 @@ class GuideMePopup {
       await chrome.tabs.sendMessage(this.activeTabId, { type: 'REFRESH_GUIDE', preferSteps: true });
       await this.restoreGuideStateFromContentScript();
     });
+    document.getElementById('saveSessionBtn').addEventListener('click', async event => {
+      if (!this.activeTabId) return;
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const result = await chrome.tabs.sendMessage(this.activeTabId, { type: 'SAVE_GUIDE_SESSION' });
+        if (result?.error) this.showStatus('Could not save your guided steps. Please try again.', 'error');
+        await this.restoreGuideStateFromContentScript();
+      } catch {
+        this.showStatus('Could not save your guided steps. Please try again.', 'error');
+      } finally { button.disabled = false; }
+    });
     this.taskInput.addEventListener('input', () => this.persistDraft());
+    document.getElementById('clearTaskBtn').addEventListener('click', async () => {
+      // Prevent a final voice result from restoring text after it has been cleared.
+      if (this.recognition) this.recognition.onresult = null;
+      this.stopVoice();
+      clearTimeout(this.draftTimer);
+      this.taskInput.value = '';
+      this.taskInput.focus();
+      try { await chrome.storage.local.set({ guidemeTaskDraft: '' }); }
+      catch { this.showStatus('Text cleared, but the saved draft could not be updated.', 'error'); }
+    });
     // Navigation
     this.settingsBtn.addEventListener('click', () => this.showView('settings'));
     this.savedGuidesBtn.addEventListener('click', () => this.showView('savedGuides'));
@@ -340,6 +373,7 @@ class GuideMePopup {
     // Listen for recording updates from content script
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === 'RECORDING_STOPPED') {
+        if (message.payload?.sessionId) { this.restoreGuideStateFromContentScript(); sendResponse({ received: true }); return; }
         this.handleRecordingComplete(message.payload);
         sendResponse({ received: true });
       }
@@ -612,6 +646,7 @@ class GuideMePopup {
       const categoryIcon = categoryIcons[category] || categoryIcons.other;
       const importedBadge = guide.imported ? '<span class="guide-badge imported">imported</span>' : '';
       const recordedBadge = guide.isRecorded ? '<span class="guide-badge recorded">recorded</span>' : '';
+      const partialBadge = guide.outcome && guide.outcome.status !== 'complete' ? '<span class="guide-badge">partial</span>' : '';
       
       return `
         <div class="saved-guide-item" data-guide-id="${guide.id}">
@@ -626,6 +661,7 @@ class GuideMePopup {
               <span>${guide.steps?.length || 0} steps</span>
               ${importedBadge}
               ${recordedBadge}
+              ${partialBadge}
             </div>
           </div>
           <div class="saved-guide-actions">
@@ -1012,7 +1048,8 @@ class GuideMePopup {
 
   async loadSettings() {
     try {
-      const result = await chrome.storage.local.get([...GuideMeAIConfig.keys, 'highlightColor', 'autoSaveGuides']);
+      const result = await chrome.storage.local.get([...GuideMeAIConfig.keys, 'highlightColor', 'autoSaveGuides', 'saveSessionHistory']);
+      document.getElementById('saveHistoryToggle').checked = result.saveSessionHistory !== false;
       if (result.apiProvider) this.settings.apiProvider = result.apiProvider;
       if (result.apiKey) this.settings.apiKey = result.apiKey;
       if (result.highlightColor) this.settings.highlightColor = result.highlightColor;
@@ -1077,7 +1114,7 @@ class GuideMePopup {
 
   showView(view) {
     this.currentView = view;
-    const selected = view === 'savedGuides' ? 'savedGuidesBtn' : view === 'settings' ? 'settingsBtn' : 'workspaceBtn';
+    const selected = ['savedGuides', 'history'].includes(view) ? 'savedGuidesBtn' : view === 'settings' ? 'settingsBtn' : 'workspaceBtn';
     document.querySelectorAll('.workspace-tab').forEach(button => {
       button.classList.toggle('active', button.id === selected);
       if (button.id === selected) button.setAttribute('aria-current', 'page');
@@ -1088,8 +1125,14 @@ class GuideMePopup {
     this.settingsView.classList.add('hidden');
     this.guideView.classList.add('hidden');
     this.savedGuidesView.classList.add('hidden');
+    document.getElementById('historyView')?.classList.add('hidden');
+    document.getElementById('sessionContextCard')?.classList.toggle('hidden', !['main', 'guide'].includes(view) || !this.historyUI?.session);
 
     switch (view) {
+      case 'history':
+        document.getElementById('historyView').classList.remove('hidden');
+        this.historyUI.load();
+        break;
       case 'main':
         this.mainView.classList.remove('hidden');
         break;
@@ -1508,7 +1551,7 @@ class GuideMePopup {
     try {
       // First check for completed recording that needs saving
       const completed = await chrome.storage.local.get(['completedRecording']);
-      if (completed.completedRecording && completed.completedRecording.steps?.length > 0) {
+      if (completed.completedRecording && !completed.completedRecording.sessionId && completed.completedRecording.steps?.length > 0) {
         // Check if it's recent (within last 30 minutes)
         const age = Date.now() - (completed.completedRecording.completedAt || 0);
         if (age < 30 * 60 * 1000) {
@@ -1523,7 +1566,7 @@ class GuideMePopup {
       
       // Check for active recording in progress
       const result = await chrome.storage.local.get(['activeRecording']);
-      if (result.activeRecording && result.activeRecording.isRecording) {
+      if (result.activeRecording && !result.activeRecording.sessionId && result.activeRecording.isRecording) {
         // Show recording panel
         this.showRecordingPanel(result.activeRecording);
       }
