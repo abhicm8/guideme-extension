@@ -1,60 +1,44 @@
-// Simple PNG generator for extension icons
+// Simple PNG generator for extension icons from the GuideMe logo
 // Run with: node generate-icons.js
 
-const fs = require('fs');
-const { createCanvas } = require('canvas');
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const sizes = [16, 32, 48, 128];
+const sourceLogo = path.join(__dirname, 'logo-icon.webp');
+const fallbackLogo = path.join(__dirname, 'GuideMe Cursor Logo 1.webp');
+const logoFile = fs.existsSync(sourceLogo) ? sourceLogo : fallbackLogo;
 
-function generateIcon(size) {
-  const canvas = createCanvas(size, size);
-  const ctx = canvas.getContext('2d');
+console.log('Generating extension PNG icons from:', path.basename(logoFile));
 
-  // Gradient background
-  const gradient = ctx.createLinearGradient(0, 0, size, size);
-  gradient.addColorStop(0, '#4F46E5');
-  gradient.addColorStop(1, '#7C3AED');
-
-  // Rounded rectangle
-  const radius = size * 0.1875;
-  ctx.beginPath();
-  ctx.roundRect(0, 0, size, size, radius);
-  ctx.fillStyle = gradient;
-  ctx.fill();
-
-  // Target circle
-  ctx.strokeStyle = 'white';
-  ctx.lineWidth = size * 0.047;
-  ctx.beginPath();
-  ctx.arc(size * 0.5, size * 0.41, size * 0.22, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // Center dot
-  ctx.fillStyle = 'white';
-  ctx.beginPath();
-  ctx.arc(size * 0.5, size * 0.41, size * 0.0625, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Bottom line
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(size * 0.5, size * 0.625);
-  ctx.lineTo(size * 0.5, size * 0.82);
-  ctx.stroke();
-
-  return canvas.toBuffer('image/png');
-}
-
-// Check if canvas module is available
 try {
-  sizes.forEach(size => {
-    const buffer = generateIcon(size);
-    fs.writeFileSync(`icon${size}.png`, buffer);
-    console.log(`Generated icon${size}.png`);
-  });
+  const pyCode = `
+import sys
+from PIL import Image
+
+src = Image.open(sys.argv[1]).convert('RGBA')
+bbox = src.getbbox()
+cropped = src.crop(bbox)
+w, h = cropped.size
+max_dim = max(w, h)
+pad = int(max_dim * 0.08)
+canvas_size = max_dim + 2 * pad
+sq = Image.new('RGBA', (canvas_size, canvas_size), (0, 0, 0, 0))
+sq.paste(cropped, ((canvas_size - w) // 2, (canvas_size - h) // 2))
+
+out_dir = sys.argv[2]
+for size in [16, 32, 48, 128]:
+    resized = sq.resize((size, size), Image.Resampling.LANCZOS)
+    resized.save(f'{out_dir}/icon{size}.png')
+    print(f'[OK] Generated icon{size}.png ({size}x{size})')
+`;
+  execFileSync('python', ['-c', pyCode, logoFile, __dirname], { stdio: 'inherit', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
   console.log('All icons generated successfully!');
 } catch (error) {
-  console.log('Canvas module not available. Using fallback method.');
-  console.log('Please install: npm install canvas');
-  console.log('Or use an online SVG to PNG converter with icon.svg');
+  console.error('Python/PIL generator failed:', error.message);
 }

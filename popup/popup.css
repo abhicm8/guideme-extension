@@ -163,6 +163,7 @@ h1, h2, h3, p {
   padding: 0;
   background: none;
   text-align: left;
+  cursor: pointer;
 }
 .logo-icon {
   width: 37px;
@@ -178,6 +179,13 @@ h1, h2, h3, p {
   width: 25px;
   height: 25px;
   stroke-width: 1.7;
+}
+.logo-icon img,
+.brand-logo-img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  display: block;
 }
 .brand-copy {
   display: flex;

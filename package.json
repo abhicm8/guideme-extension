@@ -6,7 +6,9 @@
   "scripts": {
     "test": "node --test tests/*.test.js",
     "test:browser": "playwright test",
-    "check": "node scripts/check-syntax.js"
+    "check": "node scripts/check-syntax.js",
+    "package": "node scripts/package-extension.js",
+    "build": "node scripts/check-syntax.js && node scripts/package-extension.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1"
