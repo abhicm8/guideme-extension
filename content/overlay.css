@@ -31,3 +31,48 @@
   z-index: 2147483644;
   pointer-events: none;
 }
+
+/* Palette variables are scoped to GuideMe; the host page is never themed. */
+#guideme-companion-dock {
+  color-scheme: light;
+  --gm-surface: rgba(245,248,241,.96);
+  --gm-border: rgba(255,255,255,.9);
+  --gm-ink: #294337;
+  --gm-muted: #5d7063;
+  --gm-hover: #dce6d9;
+  --gm-accent: #315e52;
+  --gm-action: #315e52;
+  --gm-on-action: #ffffff;
+  --gm-ready: #608769;
+  --gm-shadow: rgba(25,48,36,.14);
+  position: fixed; right: 20px; bottom: 20px; z-index: 2147483646;
+  display: flex; align-items: center; gap: 3px; padding: 5px;
+  border: 1px solid var(--gm-border); border-radius: 15px;
+  background: var(--gm-surface); backdrop-filter: blur(18px);
+  box-shadow: 0 4px 24px var(--gm-shadow); color: var(--gm-ink);
+  font: 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+}
+#guideme-companion-dock[data-guideme-theme='dark'] {
+  color-scheme: dark;
+  --gm-surface: rgba(28,44,33,.97);
+  --gm-border: rgba(172,206,183,.2);
+  --gm-ink: #e6efe7;
+  --gm-muted: #b2c3b6;
+  --gm-hover: #304737;
+  --gm-accent: #afd4bf;
+  --gm-action: #a3ceb6;
+  --gm-on-action: #172b20;
+  --gm-ready: #98c1a5;
+  --gm-shadow: rgba(0,0,0,.3);
+}
+#guideme-companion-dock button { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 10px; color: inherit; font: inherit; }
+#guideme-companion-dock button:hover { background: var(--gm-hover); }
+#guideme-companion-dock button:focus-visible { outline: 2px solid var(--gm-accent); outline-offset: 2px; }
+#guideme-companion-dock svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.5; }
+#guideme-companion-dock .gm-dock-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gm-ready); }
+#guideme-companion-dock .gm-dock-next { background: var(--gm-action); color: var(--gm-on-action); padding: 7px 10px; font-size: 11px; }
+#guideme-companion-dock .gm-dock-stop { color: var(--gm-muted); font-size: 11px; padding: 5px 9px; }
+#guideme-companion-dock [hidden] { display: none !important; }
+#guideme-companion-dock[data-busy='true'] .gm-dock-dot { animation: gm-companion-pulse 1.6s ease-in-out infinite; }
+@keyframes gm-companion-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { #guideme-companion-dock * { animation: none !important; } }

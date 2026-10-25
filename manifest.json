@@ -2,18 +2,19 @@
   "manifest_version": 3,
   "name": "GuideMe - AI Web Assistant",
   "version": "1.0.0",
+  "minimum_chrome_version": "141",
   "description": "Get instant, AI-powered step-by-step guidance for any website. Just ask what you want to do.",
   "permissions": [
     "activeTab",
     "storage",
-    "scripting"
+    "scripting",
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "action": {
-    "default_popup": "popup/popup.html",
-    "default_title": "GuideMe - Click for help with this page",
+    "default_title": "Open GuideMe workspace",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -31,10 +32,13 @@
     "service_worker": "background/background.js",
     "type": "module"
   },
+  "side_panel": {
+    "default_path": "popup/popup.html"
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content/content.js"],
+      "js": ["content/page-intelligence.js", "content/step-verifier.js", "content/content.js"],
       "css": ["content/overlay.css"],
       "run_at": "document_idle"
     }

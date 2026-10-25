@@ -3,61 +3,66 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GuideMe</title>
+  <script src="theme.js"></script>
+  <title>GuideMe · Browser companion</title>
   <link rel="stylesheet" href="popup.css">
 </head>
-<body>
+<body data-phase="idle">
   <div class="container">
-    <!-- Header -->
     <header class="header">
-      <div class="logo">
-        <div class="logo-icon">
-          <!-- Target/Crosshair Icon -->
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <circle cx="12" cy="12" r="10"/>
-            <circle cx="12" cy="12" r="6"/>
-            <circle cx="12" cy="12" r="2"/>
-            <line x1="12" y1="2" x2="12" y2="6"/>
-            <line x1="12" y1="18" x2="12" y2="22"/>
-            <line x1="2" y1="12" x2="6" y2="12"/>
-            <line x1="18" y1="12" x2="22" y2="12"/>
-          </svg>
-        </div>
-        <span class="logo-text">GuideMe</span>
-      </div>
+      <button id="homeBtn" class="brand" aria-label="GuideMe workspace">
+        <span class="logo-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15V9a3 3 0 0 1 3-3h6M18 9v6a3 3 0 0 1-3 3H9"/><circle cx="12" cy="12" r="2"/></svg></span>
+        <span class="brand-copy"><span class="logo-text">GuideMe</span><span class="brand-caption">BROWSER COMPANION</span></span>
+      </button>
       <div class="header-actions">
-        <button id="savedGuidesBtn" class="icon-btn" title="Saved Guides">
-          <span class="icon">
-            <svg viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="M8 7h6"/><path d="M8 11h8"/></svg>
-          </span>
-        </button>
-        <button id="settingsBtn" class="icon-btn" title="Settings">
-          <span class="icon">
-            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-          </span>
-        </button>
+        <span class="connection-state"><span class="state-dot"></span><span id="phaseLabel">Ready</span></span>
+        <button id="stopGuideBtn" class="stop-task-btn hidden" aria-label="Stop guide" title="Stop planning and remove highlights"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span>Stop</span></button>
+        <button id="hidePanelBtn" class="icon-btn" aria-label="Hide panel and keep guide active" title="Hide panel · guide stays active"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M14 4v16m3-11 3 3-3 3"/></svg></button>
       </div>
     </header>
-
+    <div class="workspace-scroll">
+      <div class="current-site"><span class="site-orbit" aria-hidden="true"></span><span id="siteName" class="site-name">Connecting to this page</span><span class="site-context">CURRENT PAGE</span></div>
+      <section id="processingCard" class="processing-card glass hidden" role="status" aria-live="polite" aria-atomic="true">
+        <div class="processing-symbol" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="processing-copy"><span class="eyebrow" id="processingStage">IN PROGRESS</span><h2 id="processingTitle">Reading the page</h2><p id="processingDetail">Finding the controls that matter to your request.</p><p class="processing-reassurance">You can hide this panel while we work.</p></div>
+        <div class="processing-track" aria-hidden="true"><span></span></div>
+      </section>
+      <div id="statusMessage" class="status-message hidden" role="status" aria-live="polite"></div>
+      <section id="sessionContextCard" class="session-context glass hidden" aria-label="Current session">
+        <span class="eyebrow">YOUR SESSION</span>
+        <h2 id="sessionTaskTitle"></h2>
+        <p id="sessionHistoryStatus" class="history-meta"></p>
+        <details id="sessionInstructions" open><summary>Saved instructions</summary><div id="sessionInstructionsCopy"></div></details>
+        <div class="session-buttons">
+          <button id="continueSessionBtn" class="retry-guide-btn">Continue guidance here</button>
+          <button id="recordSessionBtn" class="record-btn">Record my actions</button>
+          <button id="openSessionHistoryBtn" class="action-btn">View session history</button>
+        </div>
+        <div id="sessionRecordingControls" class="hidden">
+          <p id="sessionRecordingStatus" role="status"></p>
+          <p class="history-meta">Controls you use are recorded from now on. Entered text stays out of session history.</p>
+          <div class="session-buttons"><button id="pauseSessionRecordingBtn" class="action-btn">Pause recording</button><button id="resumeSessionRecordingBtn" class="action-btn hidden">Resume recording</button><button id="stopSessionRecordingBtn" class="action-btn">Stop recording</button></div>
+        </div>
+      </section>
     <!-- Main View -->
     <main id="mainView" class="main-view">
-      <div class="current-site">
-        <span class="icon icon-sm">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-        </span>
-        <span class="site-label">Currently on:</span>
-        <span id="siteName" class="site-name">Loading...</span>
+      <div class="welcome">
+        <span class="eyebrow">A LITTLE HELP, IN CONTEXT</span>
+        <h1>Find your<br>next step<span class="accent-period">.</span></h1>
+        <p>A quieter way to get things done<br>on the page in front of you.</p>
       </div>
-
       <div class="input-section">
-        <label for="taskInput" class="input-label">What do you want to do?</label>
+        <label for="taskInput" class="input-label">What would you like to do?</label>
         <div class="input-wrapper">
-          <textarea 
-            id="taskInput" 
-            class="task-input" 
-            placeholder="e.g., How do I create a new project?&#10;e.g., Where can I change my password?&#10;e.g., Help me export this as PDF"
+          <textarea
+            id="taskInput"
+            class="task-input"
+            placeholder="Find a setting, create something,&#10;or learn your way around…"
             rows="3"
           ></textarea>
+          <button id="clearTaskBtn" class="clear-task-btn" type="button" aria-label="Clear request" title="Clear text">
+            <span class="icon icon-sm" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></span>
+          </button>
           <button id="voiceBtn" class="voice-btn" title="Voice input (click to speak)">
             <span class="icon icon-sm">
               <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
@@ -72,25 +77,25 @@
           <span class="icon btn-icon">
             <svg viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
           </span>
-          Guide Me
+          Find my next step
         </button>
-        
+
         <!-- Divider between AI Guide and Recording -->
         <div class="button-divider">
           <span class="divider-line"></span>
-          <span class="divider-text">or</span>
+          <span class="divider-text">TEACH IT ONCE</span>
           <span class="divider-line"></span>
         </div>
-        
+
         <!-- Record Guide Button -->
         <button id="recordBtn" class="record-btn">
           <span class="icon btn-icon record-icon">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6" fill="currentColor"/></svg>
           </span>
-          Record Guide
+          Record a walkthrough
         </button>
       </div>
-      
+
       <!-- Recording Active Panel (shown when recording) -->
       <div id="recordingPanel" class="recording-panel hidden">
         <div class="recording-header">
@@ -100,12 +105,12 @@
           </div>
           <span id="recordingStepCount" class="recording-step-count">0 steps</span>
         </div>
-        
+
         <div class="recording-info">
           <p class="recording-hint">Perform your task normally. Each click and input will be captured.</p>
           <p id="recordingStartUrl" class="recording-url">Started on: </p>
         </div>
-        
+
         <div class="recording-actions">
           <button id="stopRecordingBtn" class="stop-recording-btn">
             <span class="icon btn-icon">
@@ -119,31 +124,21 @@
         </div>
       </div>
 
-      <div id="statusMessage" class="status-message hidden"></div>
 
-      <!-- Auto-save Toggle -->
-      <div class="auto-save-section">
-        <label class="toggle-wrapper">
-          <input type="checkbox" id="autoSaveToggle" checked>
-          <span class="toggle-slider"></span>
-          <span class="toggle-label">Auto-save guides</span>
-        </label>
-        <span class="auto-save-hint">Saves completed guides</span>
-      </div>
 
-      <!-- Quick Actions -->
       <div class="quick-actions">
-        <span class="quick-label">Quick:</span>
-        <button class="quick-btn" data-task="How do I navigate this site?">Navigate</button>
-        <button class="quick-btn" data-task="Where are the settings?">Settings</button>
-        <button class="quick-btn" data-task="How do I sign up or login?">Login</button>
+        <span class="eyebrow">A PLACE TO START</span>
+        <button class="quick-btn" data-task="Where are the settings on this page?"><span>Find a setting</span><span aria-hidden="true">↗</span></button>
+        <button class="quick-btn" data-task="Show me how to create something new on this page"><span>Create something new</span><span aria-hidden="true">↗</span></button>
+        <button class="quick-btn" data-task="Help me understand how to navigate this site"><span>Learn my way around</span><span aria-hidden="true">↗</span></button>
       </div>
+      <div class="control-note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4v5c0 5-8 9-8 9s-8-4-8-9V7l8-4Z"/><path d="m9 12 2 2 4-4"/></svg><p>You stay in control.<br><span>We point the way. You take the next step.</span></p></div>
     </main>
 
     <!-- Saved Guides View -->
     <div id="savedGuidesView" class="saved-guides-view hidden">
       <div class="settings-header">
-        <button id="backFromSavedBtn" class="icon-btn">
+        <button id="backFromSavedBtn" class="icon-btn" aria-label="Back to workspace">
           <span class="icon">
             <svg viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
           </span>
@@ -157,6 +152,7 @@
       </div>
 
       <div class="saved-guides-content">
+        <button id="historyBtn" class="retry-guide-btn">Session history</button>
         <!-- Search & Filter -->
         <div class="search-filter-bar">
           <div class="search-wrapper">
@@ -175,7 +171,7 @@
           <button class="category-pill" data-category="account">Account</button>
           <button class="category-pill" data-category="other">Other</button>
         </div>
-        
+
         <!-- Import/Export Actions -->
         <div class="import-export-actions">
           <button id="importGuideBtn" class="action-btn import-btn" title="Import .guideme file">
@@ -186,7 +182,7 @@
           </button>
           <input type="file" id="importFileInput" accept=".guideme,.json" style="display: none;">
         </div>
-        
+
         <div id="savedGuidesList" class="saved-guides-list">
           <!-- Guides will be populated here -->
         </div>
@@ -204,9 +200,17 @@
     </div>
 
     <!-- Settings View -->
+    <section id="historyView" class="history-view hidden">
+      <div class="settings-header"><button id="backFromHistoryBtn" class="icon-btn" aria-label="Back to workspace">←</button><h2>Session history</h2></div>
+      <p class="view-description">Your questions, saved advice, and recorded progress across pages.</p>
+      <button id="clearHistoryBtn" class="action-btn">Clear history</button>
+      <p id="historyEmpty" class="history-meta">Your next request will appear here, even if no actions are recorded.</p>
+      <section id="historyDetail" class="hidden"><h3 id="historyDetailTitle"></h3><div class="session-buttons"><button id="attachSessionBtn" class="action-btn">Open in workspace</button><button id="saveHistoryWalkthroughBtn" class="action-btn">Save as walkthrough</button><button id="deleteHistorySessionBtn" class="action-btn">Delete session</button></div><ol id="historyTimeline" class="history-timeline"></ol></section>
+      <div id="historyList" class="history-list"></div>
+    </section>
     <div id="settingsView" class="settings-view hidden">
       <div class="settings-header">
-        <button id="backBtn" class="icon-btn">
+        <button id="backBtn" class="icon-btn" aria-label="Back to workspace">
           <span class="icon">
             <svg viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
           </span>
@@ -220,22 +224,43 @@
       </div>
 
       <div class="settings-content">
+        <p class="view-description">Make this space work for you.</p>
+        <fieldset class="appearance-setting">
+          <legend class="setting-label">Appearance</legend>
+          <p class="setting-hint appearance-hint">Choose your look. It stays the way you set it.</p>
+          <div class="theme-options">
+            <label class="theme-option">
+              <input type="radio" name="appearanceTheme" value="light" checked>
+              <span class="theme-preview theme-preview-light" aria-hidden="true"><span></span><span></span><span></span></span>
+              <span class="theme-option-label"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.4 1.4m11.2 11.2L19 19M5 19l1.4-1.4M17.6 6.4 19 5"/></svg>Light<span class="theme-choice-indicator" aria-hidden="true"></span></span>
+            </label>
+            <label class="theme-option">
+              <input type="radio" name="appearanceTheme" value="dark">
+              <span class="theme-preview theme-preview-dark" aria-hidden="true"><span></span><span></span><span></span></span>
+              <span class="theme-option-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.7 13.1A9 9 0 0 1 10.9 3.3 9 9 0 1 0 20.7 13.1Z"/></svg>Dark<span class="theme-choice-indicator" aria-hidden="true"></span></span>
+            </label>
+          </div>
+          <p class="theme-save-note">Appearance saves automatically.</p>
+        </fieldset>
+        <div class="auto-save-section"><label class="toggle-wrapper"><input type="checkbox" id="autoSaveToggle" checked><span class="toggle-slider"></span><span class="toggle-label">Autosave guided steps</span></label><span class="auto-save-hint">Keep performed steps in Library, including when guidance hands back to you.</span></div>
+        <div class="auto-save-section"><label class="toggle-wrapper"><input type="checkbox" id="saveHistoryToggle" checked><span class="toggle-slider"></span><span class="toggle-label">Save session history</span></label><span class="auto-save-hint">Keep requests, instructions, and progress on this device. Manage them in Library → Session history.</span></div>
         <div class="setting-group">
           <label for="apiProvider" class="setting-label">AI Provider</label>
           <select id="apiProvider" class="setting-select">
-            <option value="gemini">Google Gemini (Free) ⭐</option>
-            <option value="openai">OpenAI (GPT-4o-mini)</option>
-            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="gemini">Google Gemini · API key</option>
+            <option value="vertex">Google Vertex AI · service account</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
           </select>
-          <p id="providerHint" class="setting-hint">Get free API key at aistudio.google.com</p>
+          <p id="providerHint" class="setting-hint">Add a key from your chosen provider.</p>
         </div>
 
-        <div class="setting-group">
+        <div id="apiKeyGroup" class="setting-group">
           <label for="apiKey" class="setting-label">API Key</label>
-          <input 
-            type="password" 
-            id="apiKey" 
-            class="setting-input" 
+          <input
+            type="password"
+            id="apiKey"
+            class="setting-input"
             placeholder="Enter your API key"
           >
           <p class="setting-hint">
@@ -246,6 +271,44 @@
           </p>
         </div>
 
+        <section id="vertexSettings" class="provider-section" hidden aria-label="Vertex AI credentials">
+          <div class="setting-group">
+            <label for="vertexJson" class="setting-label">Service-account JSON</label>
+            <textarea id="vertexJson" class="setting-input credential-input" rows="4" maxlength="32768" placeholder="Paste your service-account JSON" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="vertexStorageNote"></textarea>
+            <div class="credential-actions">
+              <input id="vertexFile" type="file" accept=".json,application/json" class="credential-file" aria-label="Import JSON file">
+              <button type="button" id="removeVertexCredential" class="credential-remove">Remove saved key</button>
+            </div>
+            <p id="vertexCredentialSummary" class="setting-hint" role="status">No service-account credential saved.</p>
+            <p id="vertexStorageNote" class="setting-hint">Saving keeps this private key in extension storage on this device, without encryption. Authentication goes directly to Google. Use a service account with Vertex AI User access; enable Vertex AI and billing for the project.</p>
+          </div>
+          <div class="setting-group">
+            <label for="vertexProject" class="setting-label">Google Cloud project ID</label>
+            <input id="vertexProject" class="setting-input" placeholder="Uses project_id from your JSON" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="setting-group">
+            <label for="vertexLocation" class="setting-label">Vertex location</label>
+            <input id="vertexLocation" class="setting-input" value="global" placeholder="global" spellcheck="false" autocomplete="off" list="vertexLocations">
+            <datalist id="vertexLocations"><option value="global"><option value="us-central1"><option value="europe-west4"><option value="asia-south1"></datalist>
+            <p class="setting-hint">Use a location supported by your model. Global is the default.</p>
+          </div>
+        </section>
+        <section id="geminiSettings" class="provider-section" aria-label="Gemini model settings">
+          <div class="setting-group">
+            <label for="geminiModel" class="setting-label">Gemini model</label>
+            <select id="geminiModel" class="setting-select" aria-describedby="modelHint"></select>
+            <p id="modelHint" class="setting-hint"></p>
+          </div>
+          <div id="customModelGroup" class="setting-group" hidden>
+            <label for="customGeminiModel" class="setting-label">Custom model ID</label>
+            <input id="customGeminiModel" class="setting-input" placeholder="gemini-…" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="setting-group">
+            <label for="geminiThinking" class="setting-label">Thinking</label>
+            <select id="geminiThinking" class="setting-select" aria-describedby="thinkingHint"></select>
+            <p id="thinkingHint" class="setting-hint">Higher thinking can improve complex planning and increase response time and token cost. Options follow the selected model.</p>
+          </div>
+        </section>
         <div class="setting-group">
           <label for="highlightColor" class="setting-label">Highlight Color</label>
           <input type="color" id="highlightColor" class="setting-color" value="#4F46E5">
@@ -263,25 +326,27 @@
     <!-- Guide Progress View -->
     <div id="guideView" class="guide-view hidden">
       <div class="guide-header">
-        <button id="stopGuideBtn" class="icon-btn" title="Stop guide">
-          <span class="icon">
-            <svg viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-          </span>
-        </button>
         <h2>
           <span class="icon">
             <svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
           </span>
-          Following Guide
+          Your next step
         </h2>
       </div>
 
       <div class="guide-content">
+        <p class="eyebrow">WORKING TOWARD</p><h1 id="guideTaskTitle" class="guide-task-title">Your guide</h1>
+        <p id="actionReceipt" class="action-receipt hidden" role="status"></p>
         <div id="currentStep" class="current-step">
-          <span class="step-number">Step 1 of 3</span>
-          <p class="step-instruction">Click on the "File" menu in the top navigation bar.</p>
+          <span class="step-number">CURRENT STEP</span><p class="step-instruction">Your next step will appear here.</p>
         </div>
-        
+
+        <div id="targetContext" class="target-context"></div>
+        <section id="fieldGuidance" class="field-guidance hidden" aria-label="Field help">
+          <h3 id="fieldGuidanceTitle">What to enter</h3><p id="fieldGuidanceDetail"></p><p id="fieldCompletionDetail" class="field-completion-detail"></p>
+        </section>
+
+        <div class="verification-note"><span class="verification-mark" aria-hidden="true">◎</span><div><h3 id="verificationTitle">Waiting for your action</h3><p id="verificationDetail">GuideMe checks the page after you act.</p></div></div>
         <!-- Step Edit Controls (shown for saved/recorded guides) -->
         <div id="stepEditControls" class="step-edit-controls hidden">
           <button id="editStepBtn" class="step-action-btn edit-btn" title="Edit step description">
@@ -312,9 +377,14 @@
         </div>
 
         <div class="guide-progress">
-          <div id="progressBar" class="progress-bar" style="width: 33%"></div>
+          <div id="progressBar" class="progress-bar" style="width: 0%"></div>
         </div>
 
+        <section id="formOverview" class="form-overview hidden" aria-label="Fields on this form"><h3 id="formOverviewTitle">On this form</h3><ul id="formFieldList"></ul><p>Field contents stay on the page. Presence does not check that the details are correct.</p></section>
+
+        <div class="insight-metrics"><div><strong id="verifiedCount">0</strong><span>Verified steps</span></div><div><strong id="confirmedCount">0</strong><span>Confirmed by you</span></div><div><strong id="observedCount">0</strong><span>Result unverified</span></div></div>
+        <section class="activity-section"><div class="section-heading"><h3>Your activity</h3><span id="observedPageInfo">On this page</span></div><ol id="activityList" class="activity-list"><li class="activity-empty">Your confirmed steps will appear here.</li></ol></section>
+        <button id="retryGuideBtn" class="retry-guide-btn"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12 0l2 5M4 12l2 5a7 7 0 0 0 12 0"/></svg>Refresh this step</button>
         <!-- Save Guide Section -->
         <div class="save-guide-section">
           <button id="saveCurrentGuideBtn" class="save-guide-btn">
@@ -327,8 +397,26 @@
       </div>
     </div>
 
+      <section id="completionCard" class="completion-card glass hidden" aria-live="polite">
+        <span id="summarySymbol" class="completion-check" aria-hidden="true">→</span>
+        <span id="summaryEyebrow" class="eyebrow">OVER TO YOU</span>
+        <h2 id="summaryTitle">Continue from here.</h2>
+        <p id="completionDetail"></p>
+        <ol id="summaryActions" class="summary-actions"></ol>
+        <details id="summaryHistory" class="summary-history"><summary id="summaryHistoryLabel">Your recorded actions</summary><ol id="summaryHistoryList"></ol></details>
+        <p id="summarySaveStatus" role="status"></p>
+        <button id="saveSessionBtn" class="retry-guide-btn hidden">Retry saving</button>
+        <button id="resumeGuideBtn" class="retry-guide-btn">Guide me step by step</button>
+        <button id="newGuideBtn" class="guide-btn">Start another guide<span aria-hidden="true">↗</span></button>
+      </section>
+    </div>
+    <nav class="workspace-nav" aria-label="Workspace navigation">
+      <button id="workspaceBtn" class="workspace-tab active" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg><span>Workspace</span></button>
+      <button id="savedGuidesBtn" class="workspace-tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V6a3 3 0 0 1 3-3h13v18H7a3 3 0 0 1 0-6h13M8 7h7M8 11h5"/></svg><span>Library</span></button>
+      <button id="settingsBtn" class="workspace-tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg><span>Settings</span></button>
+    </nav>
     <!-- Save Macro Modal -->
-    <div id="saveMacroModal" class="modal hidden">
+    <div id="saveMacroModal" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content">
         <h3>
           <span class="icon">
@@ -337,10 +425,10 @@
           Save Guide
         </h3>
         <p class="modal-desc">Save this guide to replay anytime without using AI.</p>
-        <input 
-          type="text" 
-          id="macroNameInput" 
-          class="macro-name-input" 
+        <input
+          type="text"
+          id="macroNameInput" aria-label="Guide name"
+          class="macro-name-input"
           placeholder="e.g., GitHub - Create New Repo"
         >
         <div class="category-select-wrapper">
@@ -360,7 +448,7 @@
     </div>
 
     <!-- Rename Guide Modal -->
-    <div id="renameGuideModal" class="modal hidden">
+    <div id="renameGuideModal" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content">
         <h3>
           <span class="icon">
@@ -369,10 +457,10 @@
           Rename Guide
         </h3>
         <p class="modal-desc">Enter a new name for this guide.</p>
-        <input 
-          type="text" 
-          id="renameGuideInput" 
-          class="modal-input" 
+        <input
+          type="text"
+          id="renameGuideInput" aria-label="New guide name"
+          class="modal-input"
           placeholder="New guide name"
         >
         <div class="category-select-wrapper">
@@ -392,7 +480,7 @@
     </div>
 
     <!-- Delete Confirmation Modal -->
-    <div id="deleteConfirmModal" class="modal hidden">
+    <div id="deleteConfirmModal" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content">
         <h3>
           <span class="icon" style="color: var(--error-500);">
@@ -407,9 +495,9 @@
         </div>
       </div>
     </div>
-    
+
     <!-- Edit Step Modal -->
-    <div id="editStepModal" class="modal hidden">
+    <div id="editStepModal" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content">
         <h3>
           <span class="icon">
@@ -418,9 +506,9 @@
           Edit Step
         </h3>
         <p class="modal-desc">Modify the step description to better explain this action.</p>
-        <textarea 
-          id="editStepInput" 
-          class="modal-textarea" 
+        <textarea
+          id="editStepInput" aria-label="Step description"
+          class="modal-textarea"
           placeholder="Step description..."
           rows="3"
         ></textarea>
@@ -430,9 +518,9 @@
         </div>
       </div>
     </div>
-    
+
     <!-- Delete Step Confirmation Modal -->
-    <div id="deleteStepModal" class="modal hidden">
+    <div id="deleteStepModal" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-content">
         <h3>
           <span class="icon" style="color: var(--error-500);">
@@ -449,12 +537,12 @@
       </div>
     </div>
 
-    <!-- Footer -->
-    <footer class="footer">
-      <span class="footer-text">Press <kbd>Ctrl+Shift+F</kbd> to open anytime</span>
-    </footer>
   </div>
 
+  <script src="panel-ui.js"></script>
+  <script src="../lib/ai-config.js"></script>
+  <script src="provider-settings.js"></script>
+  <script src="history-ui.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
